@@ -1,0 +1,521 @@
+export const COMFY_URL = "http://127.0.0.1:8188";
+
+export type LoraEntry = { name: string; modelStr: number; clipStr: number }
+
+export async function getModels(): Promise<string[]> {
+  try {
+    const resp = await fetch(`${COMFY_URL}/object_info`);
+    const data = await resp.json();
+    return data.CheckpointLoaderSimple.input.required.ckpt_name[0];
+  } catch (e) {
+    console.error("Failed to fetch ComfyUI models:", e);
+    return [];
+  }
+}
+
+export async function getLoraNames(): Promise<string[]> {
+  try {
+    const resp = await fetch(`${COMFY_URL}/object_info/LoraLoader`);
+    const data = await resp.json();
+    return data.LoraLoader.input.required.lora_name[0] ?? [];
+  } catch {
+    return [];
+  }
+}
+
+export async function queuePrompt(workflow: any, clientId: string) {
+  const resp = await fetch(`${COMFY_URL}/prompt`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ prompt: workflow, client_id: clientId }),
+  });
+  if (!resp.ok) {
+    const errData = await resp.json();
+    console.error("ComfyUI Error:", errData);
+    throw new Error(errData.error?.message || `Server rejected request (${resp.status})`);
+  }
+  return await resp.json();
+}
+
+export async function uploadVideo(url: string): Promise<string> {
+  const response = await fetch(url);
+  const blob = await response.blob();
+  const formData = new FormData();
+  const ext = url.split('.').pop()?.split('?')[0] || 'mp4';
+  formData.append('image', blob, `vortex-v2v-${Date.now()}.${ext}`);
+  const uploadResp = await fetch(`${COMFY_URL}/upload/image`, { method: 'POST', body: formData });
+  const data = await uploadResp.json();
+  return data.name;
+}
+
+export async function uploadImage(url: string): Promise<string> {
+  const response = await fetch(url);
+  const blob = await response.blob();
+  const formData = new FormData();
+  formData.append('image', blob, `vortex-input-${Date.now()}.png`);
+  const uploadResp = await fetch(`${COMFY_URL}/upload/image`, { method: 'POST', body: formData });
+  const data = await uploadResp.json();
+  return data.name;
+}
+
+export const MODEL_DESCRIPTIONS: Record<string, string> = {
+  'flux-schnell': '🦄 FLUX.1-Schnell: State-of-the-art for perfect text, hands, and photorealism. (24GB VRAM/RAM)',
+  'juggernautXL': '🏆 Best for Photorealism, Cinematic Lighting, and high detail. Ideal for SDXL.',
+  'ponyDiffusionV6XL': '🦄 Best for Anime, Uncensored content, and following complex tags accurately.',
+  'Realistic_Vision': '📸 Classic SD1.5 Photorealism. Faster than XL but lower resolution.',
+  'v1-5-pruned': '⚡ Standard Base Model. Best for fast architectural or layout testing.',
+  'default': '🤖 General purpose neural model for all-round generation.'
+};
+
+export function getModelInfo(name: string): string {
+  if (name.toLowerCase().includes('flux')) return MODEL_DESCRIPTIONS['flux-schnell'];
+  if (name.toLowerCase().includes('juggernaut')) return MODEL_DESCRIPTIONS['juggernautXL'];
+  if (name.toLowerCase().includes('pony')) return MODEL_DESCRIPTIONS['ponyDiffusionV6XL'];
+  if (name.toLowerCase().includes('realistic')) return MODEL_DESCRIPTIONS['Realistic_Vision'];
+  if (name.toLowerCase().includes('v1-5')) return MODEL_DESCRIPTIONS['v1-5-pruned'];
+  return MODEL_DESCRIPTIONS['default'];
+}
+
+function resolveSeed(seed: number): number {
+  return seed === -1 ? Math.floor(Math.random() * 2 ** 32) : seed;
+}
+
+function applyLoras(
+  workflow: any,
+  loras: LoraEntry[],
+  modelRef: [string, number],
+  clipRef: [string, number],
+  startId = 30
+): { modelRef: [string, number]; clipRef: [string, number] } {
+  loras.forEach((lora, i) => {
+    const id = String(startId + i);
+    workflow[id] = {
+      inputs: {
+        lora_name: lora.name,
+        strength_model: lora.modelStr,
+        strength_clip: lora.clipStr,
+        model: modelRef,
+        clip: clipRef
+      },
+      class_type: 'LoraLoader'
+    };
+    modelRef = [id, 0];
+    clipRef = [id, 1];
+  });
+  return { modelRef, clipRef };
+}
+
+export function createWorkflow(
+  prompt: string,
+  negativePrompt: string,
+  modelName: string,
+  width = 1024,
+  height = 1024,
+  seed = -1,
+  steps = 25,
+  cfg = 7,
+  sampler = 'dpmpp_2m',
+  scheduler = 'karras',
+  loras: LoraEntry[] = []
+) {
+  const workflow: any = {
+    "3": {
+      "inputs": {
+        "seed": resolveSeed(seed), "steps": steps, "cfg": cfg,
+        "sampler_name": sampler, "scheduler": scheduler, "denoise": 1,
+        "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]
+      },
+      "class_type": "KSampler"
+    },
+    "4": { "inputs": { "ckpt_name": modelName }, "class_type": "CheckpointLoaderSimple" },
+    "5": { "inputs": { "width": width, "height": height, "batch_size": 1 }, "class_type": "EmptyLatentImage" },
+    "6": { "inputs": { "text": prompt, "clip": ["4", 1] }, "class_type": "CLIPTextEncode" },
+    "7": { "inputs": { "text": negativePrompt, "clip": ["4", 1] }, "class_type": "CLIPTextEncode" },
+    "8": { "inputs": { "samples": ["3", 0], "vae": ["4", 2] }, "class_type": "VAEDecode" },
+    "9": { "inputs": { "filename_prefix": "VortexGen", "images": ["8", 0] }, "class_type": "SaveImage" }
+  };
+  if (loras.length > 0) {
+    const { modelRef, clipRef } = applyLoras(workflow, loras, ["4", 0], ["4", 1]);
+    workflow["3"].inputs.model = modelRef;
+    workflow["6"].inputs.clip = clipRef;
+    workflow["7"].inputs.clip = clipRef;
+  }
+  return workflow;
+}
+
+export function createFluxWorkflow(
+  prompt: string,
+  modelName: string,
+  width = 1024,
+  height = 1024,
+  seed = -1
+) {
+  return {
+    "3": {
+      "inputs": {
+        "seed": resolveSeed(seed), "steps": 4, "cfg": 1.0,
+        "sampler_name": "euler", "scheduler": "simple", "denoise": 1,
+        "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["5", 0]
+      },
+      "class_type": "KSampler"
+    },
+    "4": { "inputs": { "ckpt_name": modelName }, "class_type": "CheckpointLoaderSimple" },
+    "5": { "inputs": { "width": width, "height": height, "batch_size": 1 }, "class_type": "EmptyLatentImage" },
+    "6": { "inputs": { "text": prompt, "clip": ["4", 1] }, "class_type": "CLIPTextEncode" },
+    "7": { "inputs": { "text": "", "clip": ["4", 1] }, "class_type": "CLIPTextEncode" },
+    "8": { "inputs": { "samples": ["3", 0], "vae": ["4", 2] }, "class_type": "VAEDecode" },
+    "9": { "inputs": { "filename_prefix": "VortexFlux", "images": ["8", 0] }, "class_type": "SaveImage" }
+  };
+}
+
+export function createImg2ImgWorkflow(
+  prompt: string,
+  negativePrompt: string,
+  modelName: string,
+  imageFilename: string,
+  denoiseStrength = 0.75,
+  seed = -1,
+  steps = 25,
+  cfg = 7,
+  sampler = 'dpmpp_2m',
+  scheduler = 'karras',
+  loras: LoraEntry[] = []
+) {
+  const workflow: any = {
+    "3": {
+      "inputs": {
+        "seed": resolveSeed(seed), "steps": steps, "cfg": cfg,
+        "sampler_name": sampler, "scheduler": scheduler, "denoise": denoiseStrength,
+        "model": ["4", 0], "positive": ["6", 0], "negative": ["7", 0], "latent_image": ["13", 0]
+      },
+      "class_type": "KSampler"
+    },
+    "4": { "inputs": { "ckpt_name": modelName }, "class_type": "CheckpointLoaderSimple" },
+    "6": { "inputs": { "text": prompt, "clip": ["4", 1] }, "class_type": "CLIPTextEncode" },
+    "7": { "inputs": { "text": negativePrompt, "clip": ["4", 1] }, "class_type": "CLIPTextEncode" },
+    "8": { "inputs": { "samples": ["3", 0], "vae": ["4", 2] }, "class_type": "VAEDecode" },
+    "9": { "inputs": { "filename_prefix": "VortexI2I", "images": ["8", 0] }, "class_type": "SaveImage" },
+    "12": { "inputs": { "image": imageFilename, "upload": "image" }, "class_type": "LoadImage" },
+    "13": { "inputs": { "pixels": ["12", 0], "vae": ["4", 2] }, "class_type": "VAEEncode" }
+  };
+  if (loras.length > 0) {
+    const { modelRef, clipRef } = applyLoras(workflow, loras, ["4", 0], ["4", 1]);
+    workflow["3"].inputs.model = modelRef;
+    workflow["6"].inputs.clip = clipRef;
+    workflow["7"].inputs.clip = clipRef;
+  }
+  return workflow;
+}
+
+export function createControlNetWorkflow(
+  prompt: string,
+  negativePrompt: string,
+  modelName: string,
+  controlImageFilename: string,
+  controlNetModel: string,
+  width = 1024,
+  height = 1024,
+  useFaceDetailer = false,
+  seed = -1,
+  steps = 25,
+  cfg = 7,
+  sampler = 'dpmpp_2m',
+  scheduler = 'karras',
+  loras: LoraEntry[] = []
+) {
+  const workflow: any = {
+    "3": {
+      "inputs": {
+        "seed": resolveSeed(seed), "steps": steps, "cfg": cfg,
+        "sampler_name": sampler, "scheduler": scheduler, "denoise": 1,
+        "model": ["4", 0], "positive": ["11", 0], "negative": ["7", 0], "latent_image": ["5", 0]
+      },
+      "class_type": "KSampler"
+    },
+    "4": { "inputs": { "ckpt_name": modelName }, "class_type": "CheckpointLoaderSimple" },
+    "5": { "inputs": { "width": width, "height": height, "batch_size": 1 }, "class_type": "EmptyLatentImage" },
+    "6": { "inputs": { "text": prompt, "clip": ["4", 1] }, "class_type": "CLIPTextEncode" },
+    "7": { "inputs": { "text": negativePrompt, "clip": ["4", 1] }, "class_type": "CLIPTextEncode" },
+    "8": { "inputs": { "samples": ["3", 0], "vae": ["4", 2] }, "class_type": "VAEDecode" },
+    "9": { "inputs": { "filename_prefix": "VortexControl", "images": ["8", 0] }, "class_type": "SaveImage" },
+    "10": { "inputs": { "control_net_name": controlNetModel }, "class_type": "ControlNetLoader" },
+    "11": {
+      "inputs": {
+        "strength": 1.0, "start_percent": 0.0, "end_percent": 1.0,
+        "conditioning": ["6", 0], "control_net": ["10", 0], "image": ["12", 0]
+      },
+      "class_type": "ControlNetApply"
+    },
+    "12": { "inputs": { "image": controlImageFilename, "upload": "image" }, "class_type": "LoadImage" }
+  };
+
+  if (loras.length > 0) {
+    const { modelRef, clipRef } = applyLoras(workflow, loras, ["4", 0], ["4", 1]);
+    workflow["3"].inputs.model = modelRef;
+    workflow["6"].inputs.clip = clipRef;
+    workflow["7"].inputs.clip = clipRef;
+  }
+
+  if (useFaceDetailer) {
+    workflow["20"] = { "inputs": { "model_name": "bbox/face_yolov8m.pt" }, "class_type": "UltralyticsDetectorProvider" };
+    workflow["21"] = {
+      "inputs": {
+        "guide_size": 384, "guide_size_for": true, "max_size": 1024,
+        "seed": Math.floor(Math.random() * 1000000000), "steps": 20, "cfg": 8,
+        "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 0.4,
+        "feather": 5, "noise_mask": true, "force_inpaint": true,
+        "bbox_threshold": 0.5, "bbox_dilation": 10, "bbox_crop_factor": 3,
+        "drop_size": 10, "cycle": 1, "inpaint_model": false, "noise_mask_feather": 20,
+        "image": ["8", 0],
+        "model": workflow["3"].inputs.model,
+        "clip": workflow["6"].inputs.clip,
+        "vae": ["4", 2],
+        "positive": ["11", 0], "negative": ["7", 0], "bbox_detector": ["20", 0]
+      },
+      "class_type": "FaceDetailer"
+    };
+    workflow["9"].inputs.images = ["21", 0];
+  }
+
+  return workflow;
+}
+
+export function createDetailedWorkflow(
+  prompt: string,
+  negativePrompt: string,
+  modelName: string,
+  width = 1024,
+  height = 1024,
+  seed = -1,
+  steps = 25,
+  cfg = 7,
+  sampler = 'dpmpp_2m',
+  scheduler = 'karras',
+  loras: LoraEntry[] = []
+) {
+  const workflow: any = createWorkflow(prompt, negativePrompt, modelName, width, height, seed, steps, cfg, sampler, scheduler, loras);
+  workflow["20"] = { "inputs": { "model_name": "bbox/face_yolov8m.pt" }, "class_type": "UltralyticsDetectorProvider" };
+  workflow["21"] = {
+    "inputs": {
+      "guide_size": 384, "guide_size_for": true, "max_size": 1024,
+      "seed": Math.floor(Math.random() * 1000000000), "steps": 20, "cfg": 8,
+      "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 0.4,
+      "feather": 5, "noise_mask": true, "force_inpaint": true,
+      "bbox_threshold": 0.5, "bbox_dilation": 10, "bbox_crop_factor": 3,
+      "drop_size": 10, "cycle": 1, "inpaint_model": false, "noise_mask_feather": 20,
+      "image": ["8", 0],
+      "model": workflow["3"].inputs.model,
+      "clip": workflow["6"].inputs.clip,
+      "vae": ["4", 2],
+      "positive": ["6", 0], "negative": ["7", 0], "bbox_detector": ["20", 0]
+    },
+    "class_type": "FaceDetailer"
+  };
+  workflow["9"].inputs.images = ["21", 0];
+  return workflow;
+}
+
+export function createUpscaleWorkflow(imageFilename: string, upscaleModel = "4x-UltraSharp.pth") {
+  return {
+    "1": { "inputs": { "image": imageFilename, "upload": "image" }, "class_type": "LoadImage" },
+    "2": { "inputs": { "model_name": upscaleModel }, "class_type": "UpscaleModelLoader" },
+    "3": { "inputs": { "upscale_model": ["2", 0], "image": ["1", 0] }, "class_type": "ImageUpscaleWithModel" },
+    "4": { "inputs": { "filename_prefix": "Vortex4K", "images": ["3", 0] }, "class_type": "SaveImage" },
+    "5": { "inputs": { "images": ["3", 0] }, "class_type": "PreviewImage" }
+  };
+}
+
+export function createVideoWorkflow(
+  prompt: string,
+  negativePrompt: string,
+  modelName: string,
+  width = 1024,
+  height = 1024,
+  frames = 16,
+  fps = 12,
+  useTiledVae = false,
+  useRife = false,
+  rifeMultiplier = 5
+) {
+  const workflow: any = {
+    "3": { "inputs": { "ckpt_name": modelName }, "class_type": "CheckpointLoaderSimple" },
+    "4": { "inputs": { "text": prompt, "clip": ["3", 1] }, "class_type": "CLIPTextEncode" },
+    "5": { "inputs": { "text": negativePrompt, "clip": ["3", 1] }, "class_type": "CLIPTextEncode" },
+    "6": { "inputs": { "width": width, "height": height, "batch_size": frames }, "class_type": "EmptyLatentImage" },
+    "7": {
+      "inputs": {
+        "model": ["3", 0], "model_name": "mm_sdxl_v10_beta.safetensors",
+        "beta_schedule": "linear (AnimateDiff-SDXL)", "context_options": ["11", 0]
+      },
+      "class_type": "ADE_AnimateDiffLoaderGen1"
+    },
+    "8": {
+      "inputs": {
+        "seed": Math.floor(Math.random() * 1000000000), "steps": 25, "cfg": 7,
+        "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 1,
+        "model": ["7", 0], "positive": ["4", 0], "negative": ["5", 0], "latent_image": ["6", 0]
+      },
+      "class_type": "KSampler"
+    },
+    "11": {
+      "inputs": {
+        "context_length": 16, "context_stride": 1, "context_overlap": 4,
+        "context_schedule": "uniform", "closed_loop": false
+      },
+      "class_type": "ADE_AnimateDiffUniformContextOptions"
+    }
+  };
+
+  workflow["9"] = useTiledVae
+    ? { "inputs": { "samples": ["8", 0], "vae": ["3", 2], "tile_size": 512, "overlap": 64, "temporal_size": 64, "temporal_overlap": 8 }, "class_type": "VAEDecodeTiled" }
+    : { "inputs": { "samples": ["8", 0], "vae": ["3", 2] }, "class_type": "VAEDecode" };
+
+  let finalFrames: [string, number] = ["9", 0];
+  let finalFps = fps;
+
+  if (useRife) {
+    workflow["20"] = {
+      "inputs": { "ckpt_name": "rife47.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "frames": ["9", 0] },
+      "class_type": "RIFE VFI"
+    };
+    finalFrames = ["20", 0];
+    finalFps = fps * rifeMultiplier;
+  }
+
+  workflow["10"] = {
+    "inputs": { "images": finalFrames, "filename_prefix": "VortexVid", "frame_rate": finalFps, "loop_count": 0, "format": "video/h264-mp4", "pingpong": false, "save_output": true },
+    "class_type": "VHS_VideoCombine"
+  };
+
+  return workflow;
+}
+
+export function createI2VWorkflow(
+  prompt: string,
+  negativePrompt: string,
+  modelName: string,
+  imageFilename: string,
+  frames = 16,
+  fps = 12,
+  useTiledVae = false,
+  useRife = false,
+  rifeMultiplier = 5
+) {
+  const workflow: any = {
+    "3": { "inputs": { "ckpt_name": modelName }, "class_type": "CheckpointLoaderSimple" },
+    "4": { "inputs": { "text": prompt, "clip": ["3", 1] }, "class_type": "CLIPTextEncode" },
+    "5": { "inputs": { "text": negativePrompt, "clip": ["3", 1] }, "class_type": "CLIPTextEncode" },
+    "6": { "inputs": { "image": imageFilename }, "class_type": "LoadImage" },
+    "7": { "inputs": { "pixels": ["6", 0], "vae": ["3", 2] }, "class_type": "VAEEncode" },
+    "8": { "inputs": { "amount": Math.min(frames, 64), "samples": ["7", 0] }, "class_type": "RepeatLatentBatch" },
+    "9": {
+      "inputs": {
+        "model": ["3", 0], "model_name": "mm_sdxl_v10_beta.safetensors",
+        "beta_schedule": "linear (AnimateDiff-SDXL)", "context_options": ["13", 0]
+      },
+      "class_type": "ADE_AnimateDiffLoaderGen1"
+    },
+    "10": {
+      "inputs": {
+        "seed": Math.floor(Math.random() * 1000000000), "steps": 25, "cfg": 7,
+        "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 0.85,
+        "model": ["9", 0], "positive": ["4", 0], "negative": ["5", 0], "latent_image": ["8", 0]
+      },
+      "class_type": "KSampler"
+    },
+    "13": {
+      "inputs": { "context_length": 16, "context_stride": 1, "context_overlap": 4, "context_schedule": "uniform", "closed_loop": false },
+      "class_type": "ADE_AnimateDiffUniformContextOptions"
+    }
+  };
+
+  workflow["11"] = useTiledVae
+    ? { "inputs": { "samples": ["10", 0], "vae": ["3", 2], "tile_size": 512, "overlap": 64, "temporal_size": 64, "temporal_overlap": 8 }, "class_type": "VAEDecodeTiled" }
+    : { "inputs": { "samples": ["10", 0], "vae": ["3", 2] }, "class_type": "VAEDecode" };
+
+  let finalFrames: [string, number] = ["11", 0];
+  let finalFps = fps;
+
+  if (useRife) {
+    workflow["20"] = {
+      "inputs": { "ckpt_name": "rife47.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "frames": ["11", 0] },
+      "class_type": "RIFE VFI"
+    };
+    finalFrames = ["20", 0];
+    finalFps = fps * rifeMultiplier;
+  }
+
+  workflow["12"] = {
+    "inputs": { "images": finalFrames, "filename_prefix": "VortexI2V", "frame_rate": finalFps, "loop_count": 0, "format": "video/h264-mp4", "pingpong": false, "save_output": true },
+    "class_type": "VHS_VideoCombine"
+  };
+
+  return workflow;
+}
+
+export function createV2VWorkflow(
+  prompt: string,
+  negativePrompt: string,
+  modelName: string,
+  videoFilename: string,
+  denoiseStrength = 0.5,
+  fps = 12,
+  frameCap = 48,
+  useTiledVae = false,
+  useRife = false,
+  rifeMultiplier = 5
+) {
+  const workflow: any = {
+    "1": {
+      "inputs": {
+        "video": videoFilename, "force_rate": fps, "force_size": "Disabled",
+        "custom_width": 512, "custom_height": 512,
+        "frame_load_cap": frameCap, "skip_first_frames": 0, "select_every_nth": 1
+      },
+      "class_type": "VHS_LoadVideo"
+    },
+    "2": { "inputs": { "ckpt_name": modelName }, "class_type": "CheckpointLoaderSimple" },
+    "3": { "inputs": { "text": prompt, "clip": ["2", 1] }, "class_type": "CLIPTextEncode" },
+    "4": { "inputs": { "text": negativePrompt, "clip": ["2", 1] }, "class_type": "CLIPTextEncode" },
+    "5": { "inputs": { "pixels": ["1", 0], "vae": ["2", 2] }, "class_type": "VAEEncode" },
+    "6": {
+      "inputs": { "context_length": 16, "context_stride": 1, "context_overlap": 4, "context_schedule": "uniform", "closed_loop": false },
+      "class_type": "ADE_AnimateDiffUniformContextOptions"
+    },
+    "7": {
+      "inputs": { "model": ["2", 0], "model_name": "mm_sdxl_v10_beta.safetensors", "beta_schedule": "linear (AnimateDiff-SDXL)", "context_options": ["6", 0] },
+      "class_type": "ADE_AnimateDiffLoaderGen1"
+    },
+    "8": {
+      "inputs": {
+        "seed": Math.floor(Math.random() * 1000000000), "steps": 20, "cfg": 7,
+        "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": denoiseStrength,
+        "model": ["7", 0], "positive": ["3", 0], "negative": ["4", 0], "latent_image": ["5", 0]
+      },
+      "class_type": "KSampler"
+    }
+  };
+
+  workflow["9"] = useTiledVae
+    ? { "inputs": { "samples": ["8", 0], "vae": ["2", 2], "tile_size": 512, "overlap": 64, "temporal_size": 64, "temporal_overlap": 8 }, "class_type": "VAEDecodeTiled" }
+    : { "inputs": { "samples": ["8", 0], "vae": ["2", 2] }, "class_type": "VAEDecode" };
+
+  let finalFrames: [string, number] = ["9", 0];
+  let finalFps = fps;
+
+  if (useRife) {
+    workflow["20"] = {
+      "inputs": { "ckpt_name": "rife47.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "frames": ["9", 0] },
+      "class_type": "RIFE VFI"
+    };
+    finalFrames = ["20", 0];
+    finalFps = fps * rifeMultiplier;
+  }
+
+  workflow["10"] = {
+    "inputs": { "images": finalFrames, "filename_prefix": "VortexV2V", "frame_rate": finalFps, "loop_count": 0, "format": "video/h264-mp4", "pingpong": false, "save_output": true },
+    "class_type": "VHS_VideoCombine"
+  };
+
+  return workflow;
+}

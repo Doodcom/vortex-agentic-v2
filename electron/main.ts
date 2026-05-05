@@ -1,0 +1,262 @@
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog, shell } from 'electron'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { exec, spawn } from 'node:child_process'
+import { readFileSync, createWriteStream } from 'node:fs'
+import si from 'systeminformation'
+import { setupOllamaHandlers } from './ollama'
+import { setupSystemHandlers } from './system'
+import { setupRagHandlers } from './rag'
+import { setupDbHandlers } from './db'
+import { setupPtyHandlers } from './pty'
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+
+process.env.DIST = path.join(__dirname, '../dist')
+process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(process.env.DIST, '../public')
+
+let win: BrowserWindow | null
+let tray: Tray | null = null
+let comfyProcess: any = null
+
+function startComfyUI() {
+  const comfyDir = path.join(process.env.HOME || '/home/doodcom', '.comfyui-headless')
+  const comfyPath = path.join(comfyDir, 'start-engine.sh')
+  const logPath = path.join(app.getPath('userData'), 'comfyui.log')
+  console.log('[Main] Starting ComfyUI backend in:', comfyDir)
+
+  const logStream = createWriteStream(logPath, { flags: 'a' })
+  logStream.on('error', (err) => console.error('[ComfyUI] Log stream error:', err))
+
+  comfyProcess = spawn('bash', [comfyPath], {
+    cwd: comfyDir,
+    detached: true,
+    stdio: ['ignore', 'pipe', 'pipe']
+  })
+
+  comfyProcess.stdout?.on('error', () => {})
+  comfyProcess.stderr?.on('error', () => {})
+  comfyProcess.stdout?.pipe(logStream, { end: false })
+  comfyProcess.stderr?.pipe(logStream, { end: false })
+  comfyProcess.unref()
+}
+
+function createTray() {
+  const iconPath = path.join(
+    process.env.HOME || '/home/doodcom',
+    '.local/share/icons/hicolor/48x48/apps/vortex-agentic.png'
+  )
+  const icon = nativeImage.createFromPath(iconPath)
+  tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon)
+  tray.setToolTip('Vortex Agentic')
+
+  const menu = Menu.buildFromTemplate([
+    {
+      label: 'Show Vortex',
+      click: () => {
+        if (win) { win.show(); win.focus() }
+      }
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit',
+      click: () => {
+        tray?.destroy()
+        app.quit()
+      }
+    }
+  ])
+  tray.setContextMenu(menu)
+
+  tray.on('click', () => {
+    if (!win) return
+    win.isVisible() ? win.hide() : win.show()
+  })
+}
+
+function createWindow() {
+  win = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    frame: false,
+    backgroundColor: '#08090b',
+    webPreferences: {
+      preload: path.join(__dirname, 'preload.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+      sandbox: false,
+      webSecurity: false,
+    },
+  })
+
+  // Hide to tray on close instead of quitting
+  win.on('close', (e) => {
+    if (!app.isQuiting) {
+      e.preventDefault()
+      win?.hide()
+    }
+  })
+
+  if (process.env.VITE_DEV_SERVER_URL) {
+    win.loadURL(process.env.VITE_DEV_SERVER_URL)
+  } else {
+    win.loadFile(path.join(process.env.DIST, 'index.html'))
+  }
+
+  if (win) {
+    setupOllamaHandlers(win)
+    setupSystemHandlers(win)
+    setupRagHandlers()
+    setupDbHandlers()
+    setupPtyHandlers(win)
+  }
+}
+
+// IPC Handlers
+ipcMain.handle('exec-command', async (_, command: string) => {
+  return new Promise((resolve) => {
+    exec(command, (error, stdout, stderr) => {
+      resolve({
+        success: !error,
+        stdout: stdout.trim(),
+        stderr: stderr.trim(),
+        exitCode: error?.code || 0
+      })
+    })
+  })
+})
+
+ipcMain.handle('open-external', async (_, url: string) => {
+  await shell.openExternal(url)
+  return { success: true }
+})
+
+ipcMain.handle('get-system-stats', async () => {
+  const [cpu, mem, load, fsSize, networkStats, graphics] = await Promise.all([
+    si.cpu(),
+    si.mem(),
+    si.currentLoad(),
+    si.fsSize(),
+    si.networkStats(),
+    si.graphics()
+  ])
+
+  const mainDisk = fsSize.find((d: any) => d.mount === '/') || fsSize[0]
+  const gpu = graphics.controllers[0] ?? null
+
+  return {
+    cpu: {
+      manufacturer: cpu.manufacturer,
+      brand: cpu.brand,
+      speed: cpu.speed,
+      cores: cpu.cores,
+      load: load.currentLoad
+    },
+    memory: {
+      total: mem.total,
+      free: mem.free,
+      used: mem.used,
+      active: mem.active
+    },
+    storage: {
+      used: mainDisk?.used || 0,
+      size: mainDisk?.size || 0,
+      use: mainDisk?.use || 0
+    },
+    network: {
+      rx_sec: networkStats[0]?.rx_sec || 0,
+      tx_sec: networkStats[0]?.tx_sec || 0,
+      iface: networkStats[0]?.iface || 'detecting'
+    },
+    gpu: gpu ? {
+      model:            gpu.model ?? gpu.name ?? 'GPU',
+      utilizationGpu:   gpu.utilizationGpu   ?? 0,
+      utilizationMemory: gpu.utilizationMemory ?? 0,
+      memoryTotal:      gpu.memoryTotal ?? gpu.vram ?? 0,
+      memoryUsed:       gpu.memoryUsed  ?? 0,
+      temperatureGpu:   gpu.temperatureGpu ?? 0,
+      powerDraw:        gpu.powerDraw   ?? 0,
+      powerLimit:       gpu.powerLimit  ?? 0,
+      fanSpeed:         gpu.fanSpeed    ?? 0,
+      clockCore:        gpu.clockCore   ?? 0,
+    } : null
+  }
+})
+
+ipcMain.handle('dialog-open-file', async () => {
+  if (!win) return null
+  const result = await dialog.showOpenDialog(win, {
+    properties: ['openFile'],
+    filters: [
+      { name: 'Text / Code', extensions: ['txt','md','json','yaml','yml','toml','sh','bash','py','js','ts','tsx','jsx','rs','go','c','cpp','h','css','html','xml','csv','log','conf','cfg','ini','env'] },
+      { name: 'All Files', extensions: ['*'] },
+    ],
+  })
+  if (result.canceled || result.filePaths.length === 0) return null
+  const filePath = result.filePaths[0]
+  try {
+    const raw = readFileSync(filePath, 'utf8')
+    const MAX = 20_000
+    return { name: path.basename(filePath), path: filePath, content: raw.slice(0, MAX), truncated: raw.length > MAX }
+  } catch (e: any) {
+    return { error: e.message }
+  }
+})
+
+ipcMain.on('window-control', (_, action: 'minimize' | 'maximize' | 'close') => {
+  if (!win) return
+  switch (action) {
+    case 'minimize': win.minimize(); break
+    case 'maximize': win.isMaximized() ? win.unmaximize() : win.maximize(); break
+    case 'close': win.hide(); break  // hide to tray instead of closing
+  }
+})
+
+app.on('window-all-closed', () => {
+  // Do not quit — app lives in the tray
+})
+
+app.on('before-quit', () => {
+  (app as any).isQuiting = true
+})
+
+ipcMain.handle('show-context-menu', (event, props) => {
+  const contents = event.sender
+  const menu = Menu.buildFromTemplate([
+    { label: 'Cut', role: 'cut', enabled: props.editFlags?.canCut },
+    { label: 'Copy', role: 'copy', enabled: props.editFlags?.canCopy },
+    { label: 'Paste', role: 'paste', enabled: props.editFlags?.canPaste },
+    { type: 'separator' },
+    { label: 'Select All', role: 'selectAll' },
+    { type: 'separator' },
+    {
+      label: 'Inspect Element',
+      click: () => contents.inspectElement(props.x, props.y)
+    }
+  ])
+  menu.popup()
+})
+
+app.on('web-contents-created', (_, contents) => {
+  contents.on('context-menu', (_, props) => {
+    const menu = Menu.buildFromTemplate([
+      { label: 'Cut', role: 'cut', enabled: props.editFlags.canCut },
+      { label: 'Copy', role: 'copy', enabled: props.editFlags.canCopy },
+      { label: 'Paste', role: 'paste', enabled: props.editFlags.canPaste },
+      { type: 'separator' },
+      { label: 'Select All', role: 'selectAll' },
+      { type: 'separator' },
+      {
+        label: 'Inspect Element',
+        click: () => contents.inspectElement(props.x, props.y)
+      }
+    ])
+    menu.popup()
+  })
+})
+
+app.whenReady().then(() => {
+  startComfyUI()
+  createWindow()
+  createTray()
+})
