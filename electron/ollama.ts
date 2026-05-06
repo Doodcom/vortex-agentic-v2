@@ -3,7 +3,7 @@ import { ipcMain, BrowserWindow } from 'electron'
 import { getMemoriesList, addMemoryFact, logAuditCommand } from './db'
 import si from 'systeminformation'
 import { exec } from 'node:child_process'
-import { writeFileSync, mkdirSync } from 'node:fs'
+import { writeFileSync, mkdirSync, promises as fsPromises } from 'node:fs'
 import { promisify } from 'node:util'
 
 const execAsync = promisify(exec)
@@ -167,8 +167,8 @@ async function executeTool(name: string, args: any, ctx: { searxngUrl: string } 
     case 'read_file': {
       const p = String(args.path ?? '')
       try {
-        const { stdout } = await execAsync(`cat "${p}"`, { timeout: 5000 })
-        return stdout.slice(0, 4000) || '(empty)'
+        const content = await fsPromises.readFile(p, 'utf8')
+        return content.slice(0, 4000) || '(empty)'
       } catch (e: any) {
         return `Error: ${e.message}`
       }
@@ -191,7 +191,7 @@ async function executeTool(name: string, args: any, ctx: { searxngUrl: string } 
       const q = String(args.query ?? '').replace(/[^a-zA-Z0-9._\-+]/g, '')
       if (!q) return 'Error: Invalid query'
       try {
-        const { stdout } = await execAsync(`pacman -Ss ${q} 2>/dev/null`, { timeout: 10000 })
+        const { stdout } = await execAsync(`pacman -Ss "${q}" 2>/dev/null`, { timeout: 10000 })
         return stdout.trim().split('\n').slice(0, 30).join('\n') || 'No packages found'
       } catch {
         return 'No packages found'
@@ -297,14 +297,11 @@ async function executeTool(name: string, args: any, ctx: { searxngUrl: string } 
   }
 }
 
-async function buildSystemPrompt(isGreeting: boolean = false): Promise<string> {
+async function buildSystemPrompt(): Promise<string> {
   try {
-    const [os, cpu, mem] = await Promise.all([si.osInfo(), si.cpu(), si.mem()])
-    if (isGreeting) {
-      return `You are Quantum, a concise AI assistant. You are running on a high-end Linux machine. Say hello and wait for instructions. No technical fluff.`
-    }
+    const [osInfo, cpu, mem] = await Promise.all([si.osInfo(), si.cpu(), si.mem()])
     return `You are Quantum, an expert Linux administrator assistant.
-SYSTEM: ${os.distro} ${os.release}, CPU: ${cpu.brand}, RAM: ${Math.round(mem.total / 1e9)}GB.
+SYSTEM: ${osInfo.distro} ${osInfo.release}, CPU: ${cpu.brand}, RAM: ${Math.round(mem.total / 1e9)}GB.
 BEHAVIOUR: Give direct technical answers. You have a large 32k context window; you can handle long files and complex history. ALWAYS use markdown code blocks (\`\`\`) for commands, code snippets, image prompts (Positive/Negative), or any structured text you want the user to be able to copy easily. Use \`\`\`bash for shell commands. Be brief.`
   } catch {
     return 'You are Quantum, a concise AI assistant.'
@@ -348,15 +345,12 @@ export function setupOllamaHandlers(win: BrowserWindow) {
 
   ipcMain.handle('ollama-chat', async (event, { model, messages, customPrompt, images }) => {
     try {
-      const userText = messages[messages.length - 1]?.content ?? ''
-      const isGreeting = userText.toLowerCase().trim() === 'hello' || userText.toLowerCase().trim() === 'hi'
-      
       if (lastLoadedModel && lastLoadedModel !== model) {
         await purgeVram(lastLoadedModel)
       }
       lastLoadedModel = model
 
-      const sysContent = applyExtras(await buildSystemPrompt(isGreeting), customPrompt)
+      const sysContent = applyExtras(await buildSystemPrompt(), customPrompt)
       const fullMessages = [{ role: 'system', content: sysContent }, ...messages]
 
       // Attach images to the last message if it's from the user
@@ -381,8 +375,12 @@ export function setupOllamaHandlers(win: BrowserWindow) {
       })
 
       activeStream = response.data
+      let chatBuf = ''
       response.data.on('data', (chunk: Buffer) => {
-        for (const line of chunk.toString().split('\n')) {
+        chatBuf += chunk.toString()
+        const lines = chatBuf.split('\n')
+        chatBuf = lines.pop()!
+        for (const line of lines) {
           if (!line.trim()) continue
           try {
             const json = JSON.parse(line)
@@ -437,8 +435,12 @@ export function setupOllamaHandlers(win: BrowserWindow) {
             }
           }, { responseType: 'stream' })
           activeStream = streamRes.data
+          let agentBuf = ''
           streamRes.data.on('data', (chunk: Buffer) => {
-            for (const line of chunk.toString().split('\n')) {
+            agentBuf += chunk.toString()
+            const lines = agentBuf.split('\n')
+            agentBuf = lines.pop()!
+            for (const line of lines) {
               if (!line.trim()) continue
               try {
                 const j = JSON.parse(line)
@@ -461,6 +463,7 @@ export function setupOllamaHandlers(win: BrowserWindow) {
           loop.push({ role: 'tool', content: result })
         }
       }
+      win.webContents.send('ollama-token', '\n\n_[Max tool iterations reached — response may be incomplete]_')
       win.webContents.send('ollama-done')
       return { success: true }
     } catch (e: any) {
@@ -562,8 +565,12 @@ export function setupOllamaHandlers(win: BrowserWindow) {
       }, { responseType: 'stream' })
 
       activeStream = synthRes.data
+      let orchBuf = ''
       synthRes.data.on('data', (chunk: Buffer) => {
-        for (const line of chunk.toString().split('\n')) {
+        orchBuf += chunk.toString()
+        const lines = orchBuf.split('\n')
+        orchBuf = lines.pop()!
+        for (const line of lines) {
           if (!line.trim()) continue
           try {
             const j = JSON.parse(line)
@@ -584,8 +591,12 @@ export function setupOllamaHandlers(win: BrowserWindow) {
   ipcMain.handle('ollama-pull-model', async (event, { name }) => {
     try {
       const response = await axios.post(`${OLLAMA_URL}/api/pull`, { name, stream: true }, { responseType: 'stream' })
+      let pullBuf = ''
       response.data.on('data', (chunk: Buffer) => {
-        for (const line of chunk.toString().split('\n')) {
+        pullBuf += chunk.toString()
+        const lines = pullBuf.split('\n')
+        pullBuf = lines.pop()!
+        for (const line of lines) {
           if (!line.trim()) continue
           try {
             const json = JSON.parse(line)
@@ -593,6 +604,13 @@ export function setupOllamaHandlers(win: BrowserWindow) {
           } catch {}
         }
       })
+      return { success: true }
+    } catch (e: any) { return { success: false, error: e.message } }
+  })
+
+  ipcMain.handle('ollama-delete-model', async (_, { name }) => {
+    try {
+      await axios.delete(`${OLLAMA_URL}/api/delete`, { data: { name } })
       return { success: true }
     } catch (e: any) { return { success: false, error: e.message } }
   })

@@ -1,4 +1,4 @@
-import { ipcMain, dialog } from 'electron'
+import { ipcMain, dialog, BrowserWindow } from 'electron'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 import { getEmbedding } from './ollama'
@@ -89,13 +89,13 @@ async function scanDirectory(dir: string, baseDir: string): Promise<ProjectFile[
   return files
 }
 
-export function setupRagHandlers() {
+export function setupRagHandlers(win: BrowserWindow) {
   ipcMain.handle('rag-select-project', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openDirectory'] })
     if (canceled || filePaths.length === 0) return null
 
     currentProjectPath = filePaths[0]
-    
+
     // Check cache
     const existing = getProjectRag(currentProjectPath)
     if (existing.length > 0) {
@@ -103,27 +103,38 @@ export function setupRagHandlers() {
       return { path: currentProjectPath, fileCount: fileIndex.length, cached: true }
     }
 
-    const files = await scanDirectory(currentProjectPath, currentProjectPath)
+    const projectPath = currentProjectPath
+    const files = await scanDirectory(projectPath, projectPath)
     fileIndex = files.map(f => f.path)
-    
-    const chunks: any[] = []
-    for (const file of files) {
-      const fileChunks = buildChunks(file)
-      for (const chunk of fileChunks) {
+
+    const allChunks: Chunk[] = files.flatMap(buildChunks)
+    const total = allChunks.length
+
+    // Return immediately — embedding runs in the background
+    setImmediate(async () => {
+      const embedded: any[] = []
+      let failed = 0
+      for (let i = 0; i < allChunks.length; i++) {
+        const chunk = allChunks[i]
         try {
           const embedding = await getEmbedding(EMBED_MODEL, chunk.content)
-          chunks.push({ ...chunk, embedding })
-        } catch (e) {
+          embedded.push({ ...chunk, embedding })
+        } catch {
+          failed++
           console.error(`[RAG] Failed to embed chunk in ${chunk.filePath}`)
         }
+        win.webContents.send('rag-progress', { done: i + 1, total })
       }
-    }
 
-    if (chunks.length > 0) {
-      saveRagChunks(currentProjectPath, chunks)
-    }
+      if (embedded.length > 0) {
+        saveRagChunks(projectPath, embedded)
+        win.webContents.send('rag-done', { path: projectPath, fileCount: files.length, cached: false })
+      } else {
+        win.webContents.send('rag-error', `Embedding failed for all chunks. Is the model installed?\nRun: ollama pull ${EMBED_MODEL}`)
+      }
+    })
 
-    return { path: currentProjectPath, fileCount: files.length, cached: false }
+    return { path: projectPath, fileCount: files.length, indexing: true }
   })
 
   ipcMain.handle('rag-get-context', async (_, query: string) => {

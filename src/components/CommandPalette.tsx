@@ -1,6 +1,10 @@
 import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Search, Zap, Trash2, LayoutDashboard, MessageSquare, RefreshCw, Sparkles, Video, Box, Layers, Home } from 'lucide-react'
+import {
+  Search, Zap, Trash2, LayoutDashboard, MessageSquare, RefreshCw, Sparkles, Video, Box, Layers,
+  Home, Terminal, Network, Cpu, HardDrive, Activity, List, Settings, Brain, Image, BookOpen,
+  Shield, Rocket, BarChart3, Play, Server, BotMessageSquare, Camera, GitBranch
+} from 'lucide-react'
 import { cn } from '../lib/utils'
 
 interface CommandPaletteProps {
@@ -10,16 +14,34 @@ interface CommandPaletteProps {
 }
 
 const COMMANDS = [
-  { id: 'dash', label: 'Go to Dashboard', icon: LayoutDashboard, action: 'nav:dashboard' },
-  { id: 'home', label: 'Open Home Assistant', icon: Home, action: 'nav:home' },
-  { id: 'image', label: 'Generate AI Imagery', icon: Sparkles, action: 'nav:image-gen' },
-  { id: 'video', label: 'Generate AI Motion', icon: Video, action: 'nav:video-gen' },
-  { id: 'chat', label: 'Open AI Assistant', icon: MessageSquare, action: 'nav:assistant' },
-  { id: 'docker', label: 'Manage Docker Containers', icon: Box, action: 'nav:docker' },
-  { id: 'dep', label: 'View Dependency Graph', icon: Layers, action: 'nav:depgraph' },
-  { id: 'updates', label: 'Check for Updates', icon: RefreshCw, action: 'nav:updates' },
-  { id: 'clean', label: 'Run System Cleanup', icon: Trash2, action: 'nav:cleaner' },
-  { id: 'opt', label: 'Open Optimizer', icon: Zap, action: 'nav:optimizer' },
+  { id: 'dash',      label: 'Dashboard',               icon: LayoutDashboard, action: 'nav:dashboard',  shortcut: 'Ctrl+1' },
+  { id: 'assistant', label: 'AI Assistant',             icon: MessageSquare,   action: 'nav:assistant',  shortcut: 'Ctrl+2' },
+  { id: 'image',     label: 'Image Generation',         icon: Sparkles,        action: 'nav:image-gen',  shortcut: 'Ctrl+3' },
+  { id: 'video',     label: 'Video Generation',         icon: Video,           action: 'nav:video-gen',  shortcut: 'Ctrl+4' },
+  { id: 'memory',    label: 'AI Memory',                icon: Brain,           action: 'nav:memory',     shortcut: 'Ctrl+5' },
+  { id: 'ai-models', label: 'AI Models (Ollama)',      icon: BotMessageSquare, action: 'nav:ai-models'  },
+  { id: 'home',      label: 'Home Assistant',           icon: Home,            action: 'nav:home',       shortcut: 'Ctrl+6' },
+  { id: 'updates',   label: 'System Updates',           icon: RefreshCw,       action: 'nav:updates',    shortcut: 'Ctrl+7' },
+  { id: 'packages',  label: 'Package Manager',          icon: Box,             action: 'nav:packages',   shortcut: 'Ctrl+8' },
+  { id: 'scheduler', label: 'CPU Scheduler (SCX/BORE)', icon: Cpu,             action: 'nav:scheduler',  shortcut: 'Ctrl+9' },
+  { id: 'processes', label: 'Process Manager',          icon: Activity,        action: 'nav:processes'   },
+  { id: 'services',  label: 'Systemd Services',         icon: Server,          action: 'nav:services'    },
+  { id: 'docker',    label: 'Docker Containers',        icon: Play,            action: 'nav:docker'      },
+  { id: 'network',   label: 'Network Monitor',          icon: Network,         action: 'nav:network'     },
+  { id: 'disk',      label: 'Disk & SMART',             icon: HardDrive,       action: 'nav:disk'        },
+  { id: 'boot',      label: 'Boot Analyzer',            icon: Rocket,          action: 'nav:boot'        },
+  { id: 'logs',      label: 'Log Viewer',               icon: BookOpen,        action: 'nav:logs'        },
+  { id: 'startup',   label: 'Startup Apps',             icon: List,            action: 'nav:startup'     },
+  { id: 'cleaner',    label: 'System Cleaner',            icon: Trash2,          action: 'nav:cleaner'     },
+  { id: 'snapshots',  label: 'Restore Points (Snapper)', icon: Camera,          action: 'nav:snapshots'   },
+  { id: 'optimizer', label: 'Optimizer (x86-v4)',       icon: Zap,             action: 'nav:optimizer'   },
+  { id: 'sandbox',   label: 'WinBoat Sandbox',          icon: Shield,          action: 'nav:sandbox'     },
+  { id: 'gallery',   label: 'Asset Gallery',            icon: Image,           action: 'nav:gallery'     },
+  { id: 'terminal',  label: 'Terminal',                 icon: Terminal,        action: 'nav:terminal'    },
+  { id: 'audit',     label: 'Audit Log',                icon: BarChart3,       action: 'nav:audit'       },
+  { id: 'depgraph',  label: 'Dependency Graph',         icon: Layers,          action: 'nav:depgraph'    },
+  { id: 'automations', label: 'Automation Workflows',    icon: GitBranch,       action: 'nav:automations' },
+  { id: 'settings',  label: 'Settings',                 icon: Settings,        action: 'nav:settings'    },
 ]
 
 export default function CommandPalette({ isOpen, setIsOpen, onNavigate }: CommandPaletteProps) {
@@ -121,6 +143,11 @@ export default function CommandPalette({ isOpen, setIsOpen, onNavigate }: Comman
                       {cmd.label}
                     </div>
                   </div>
+                  {(cmd as any).shortcut && (
+                    <kbd className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-[9px] font-mono text-zinc-500">
+                      {(cmd as any).shortcut}
+                    </kbd>
+                  )}
                   {i === selectedIndex && (
                     <div className="text-[10px] font-mono text-crimson uppercase tracking-widest animate-pulse">
                       Execute

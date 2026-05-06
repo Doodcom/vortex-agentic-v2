@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react'
-import { Cpu, MemoryStick, Bot, Shield, Zap, MessageSquare } from 'lucide-react'
+import { Cpu, MemoryStick, Bot, Shield, Zap, MessageSquare, Hash } from 'lucide-react'
 
 interface StatusBarProps {
   stats: any
@@ -35,16 +35,27 @@ const PROFILE_COLOR: Record<string, string> = {
 export default function StatusBar({ stats }: StatusBarProps) {
   const cpuPct = stats?.cpu?.load ?? null
   const ramPct = stats?.memory ? (stats.memory.used / stats.memory.total) * 100 : null
-  const model = (localStorage.getItem('vortex-default-model') ?? '').split(':')[0] || 'no model'
+  const [model, setModel] = useState(() => (localStorage.getItem('vortex-default-model') ?? '').split(':')[0] || 'no model')
   const [sessionName, setSessionName] = useState('New Chat')
   const [powerProfile, setPowerProfile] = useState<string | null>(null)
+  const [tokenUsage, setTokenUsage] = useState<{ promptTokens: number; completionTokens: number } | null>(null)
 
   useEffect(() => {
     const handleSessionChange = (e: any) => {
       setSessionName(e.detail?.name || 'New Chat')
     }
+    const handleModelChange = (e: any) => {
+      setModel((String(e.detail) ?? '').split(':')[0] || 'no model')
+    }
+    const handleTokenUsage = (e: any) => setTokenUsage(e.detail)
     window.addEventListener('vortex-session-change', handleSessionChange)
-    return () => window.removeEventListener('vortex-session-change', handleSessionChange)
+    window.addEventListener('vortex-model-change', handleModelChange)
+    window.addEventListener('vortex-token-usage', handleTokenUsage)
+    return () => {
+      window.removeEventListener('vortex-session-change', handleSessionChange)
+      window.removeEventListener('vortex-model-change', handleModelChange)
+      window.removeEventListener('vortex-token-usage', handleTokenUsage)
+    }
   }, [])
 
   useEffect(() => {
@@ -92,6 +103,12 @@ export default function StatusBar({ stats }: StatusBarProps) {
       />
       <Sep />
       <Pill icon={Bot} label="Model" value={model} color="#52525b" />
+      {tokenUsage && (
+        <>
+          <Sep />
+          <Pill icon={Hash} label="Ctx" value={`${(tokenUsage.promptTokens / 1000).toFixed(1)}k`} color="#52525b" />
+        </>
+      )}
       <Sep />
       <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
         <MessageSquare size={9} style={{ color: '#52525b', flexShrink: 0 }} />

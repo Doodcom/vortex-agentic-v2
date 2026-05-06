@@ -2,7 +2,7 @@ import { ipcMain, dialog } from 'electron'
 import { exec, spawn } from 'child_process'
 import { promisify } from 'util'
 import { readFileSync, readdirSync, existsSync, unlinkSync, statSync, writeFileSync } from 'fs'
-import { join, extname } from 'path'
+import { join, extname, resolve } from 'path'
 import { homedir, tmpdir } from 'os'
 import axios from 'axios'
 import si from 'systeminformation'
@@ -130,6 +130,9 @@ export function setupSystemHandlers(win: any) {
   }
 
   ipcMain.handle('system-upgrade', async () => {
+    // 2026 Best Practice: Auto-snapshot before full system upgrade
+    try { await execPromise('pkexec snapper -c root create -t pre -p -d "Vortex system upgrade"') } catch {}
+
     const helper = await detectAurHelper()
     streamLog(`> Starting system upgrade via ${helper}...`)
     
@@ -146,6 +149,9 @@ export function setupSystemHandlers(win: any) {
   })
 
   ipcMain.handle('ai-update-components', async () => {
+    // Auto-snapshot before AI stack update
+    try { await execPromise('pkexec snapper -c root create -t pre -p -d "Vortex AI update"') } catch {}
+
     streamLog('> Initializing AI Component synchronization...')
 
     const comfyDir = join(homedir(), '.comfyui-headless')
@@ -255,8 +261,9 @@ export function setupSystemHandlers(win: any) {
 
   // AI Log Diagnosis (Get last logs)
   ipcMain.handle('system-get-logs', async (_, lines = 50) => {
+    const safeLines = Math.max(10, Math.min(10000, parseInt(String(lines), 10) || 50))
     try {
-      const { stdout } = await execPromise(`journalctl -n ${lines} --no-pager`)
+      const { stdout } = await execPromise(`journalctl -n ${safeLines} --no-pager`)
       return stdout
     } catch (error: any) {
       return `Failed to fetch logs: ${error.message}`
@@ -264,8 +271,9 @@ export function setupSystemHandlers(win: any) {
   })
 
   ipcMain.handle('system-get-error-logs', async (_, lines = 50) => {
+    const safeLines = Math.max(10, Math.min(10000, parseInt(String(lines), 10) || 50))
     try {
-      const { stdout } = await execPromise(`journalctl -p 3 -n ${lines} --no-pager`)
+      const { stdout } = await execPromise(`journalctl -p 3 -n ${safeLines} --no-pager`)
       return stdout
     } catch (error: any) {
       return `Failed to fetch error logs: ${error.message}`
@@ -472,7 +480,7 @@ export function setupSystemHandlers(win: any) {
   ipcMain.handle('system-delete-asset', async (_, filePath: string) => {
     try {
       const allowed = join(homedir(), 'Pictures')
-      if (!filePath.startsWith(allowed)) return { success: false, error: 'Path outside allowed directory' }
+      if (!resolve(filePath).startsWith(allowed)) return { success: false, error: 'Path outside allowed directory' }
       unlinkSync(filePath)
       return { success: true }
     } catch (e: any) {
@@ -532,6 +540,19 @@ export function setupSystemHandlers(win: any) {
 
   ipcMain.handle('package-install', async (_, { name, helper }: { name: string; helper: string }) => {
     const safe = name.replace(/[^a-zA-Z0-9._+-]/g, '')
+    
+    // 2026 Shelly Integration: Try native CachyOS GUI first
+    try {
+      const { stdout: hasShelly } = await execPromise('which shelly 2>/dev/null || true')
+      if (hasShelly.trim()) {
+        // Invoke Shelly via D-Bus for themed progress GUI
+        await execPromise(`busctl call io.cachyos.Shelly /io/cachyos/Shelly io.cachyos.Shelly Install s "${safe}"`)
+        return { success: true, output: `Installation of ${safe} handed off to Shelly.` }
+      }
+    } catch (e) {
+      console.log('[Vortex] Shelly D-Bus handoff failed, falling back to CLI:', e)
+    }
+
     const safeHelper = ['paru', 'yay', 'pacman'].includes(helper) ? helper : 'pacman'
     const cmd = safeHelper === 'pacman'
       ? `pkexec pacman -S --noconfirm ${safe}`
@@ -542,6 +563,16 @@ export function setupSystemHandlers(win: any) {
 
   ipcMain.handle('package-remove', async (_, name: string) => {
     const safe = name.replace(/[^a-zA-Z0-9._+-]/g, '')
+    
+    // Try Shelly for removal too
+    try {
+      const { stdout: hasShelly } = await execPromise('which shelly 2>/dev/null || true')
+      if (hasShelly.trim()) {
+        await execPromise(`busctl call io.cachyos.Shelly /io/cachyos/Shelly io.cachyos.Shelly Remove s "${safe}"`)
+        return { success: true, output: `Removal of ${safe} handed off to Shelly.` }
+      }
+    } catch {}
+
     const res = await runStreamingCmd('bash', ['-c', `pkexec pacman -Rns --noconfirm ${safe}`])
     return { success: res.success, output: res.log }
   })
@@ -592,7 +623,7 @@ export function setupSystemHandlers(win: any) {
       const args = ['journalctl', '--no-pager', '--output=short-iso']
       if (opts.unit)     args.push('-u', opts.unit.replace(/[^a-zA-Z0-9@._-]/g, ''))
       if (opts.priority) args.push('-p', String(parseInt(opts.priority)))
-      if (opts.since)    args.push(`--since="${opts.since}"`)
+      if (opts.since)    args.push(`--since="${opts.since.replace(/[^0-9a-zA-Z :.\-]/g, '')}"`)
       if (opts.lines)    args.push('-n', String(opts.lines))
       if (opts.keyword)  args.push(`-g`, opts.keyword.replace(/['"]/g, ''))
       const { stdout } = await execPromise(args.join(' '))
@@ -641,7 +672,7 @@ export function setupSystemHandlers(win: any) {
   ipcMain.handle('startup-toggle-desktop', async (_, { path: filePath, enabled }: { path: string; enabled: boolean }) => {
     try {
       const allowed = join(homedir(), '.config', 'autostart')
-      if (!filePath.startsWith(allowed)) return { success: false, error: 'Path outside allowed directory' }
+      if (!resolve(filePath).startsWith(allowed)) return { success: false, error: 'Path outside allowed directory' }
       let content = readFileSync(filePath, 'utf8')
       if (content.includes('X-GNOME-Autostart-enabled=')) {
         content = content.replace(/^X-GNOME-Autostart-enabled=.*/m, `X-GNOME-Autostart-enabled=${enabled}`)
@@ -658,7 +689,7 @@ export function setupSystemHandlers(win: any) {
   ipcMain.handle('startup-delete-desktop', async (_, filePath: string) => {
     try {
       const allowed = join(homedir(), '.config', 'autostart')
-      if (!filePath.startsWith(allowed)) return { success: false, error: 'Path outside allowed directory' }
+      if (!resolve(filePath).startsWith(allowed)) return { success: false, error: 'Path outside allowed directory' }
       unlinkSync(filePath)
       return { success: true }
     } catch (e: any) {
@@ -982,4 +1013,502 @@ export function setupSystemHandlers(win: any) {
       return { success: false, used: 0, total: 0, free: 0, gpuUtil: 0 }
     }
   })
+
+  // Snapper snapshot management
+  ipcMain.handle('system-snapper-snapshot', async (_, desc?: string) => {
+    const description = desc || 'Vortex pre-change snapshot'
+    try {
+      const { stdout } = await execPromise(`pkexec snapper -c root create -t pre -p -d "${description}"`)
+      return { success: true, output: `Snapshot created: ${stdout.trim()}` }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('system-snapper-list', async () => {
+    try {
+      const { stdout } = await execPromise('snapper -c root list --columns number,type,date,description,used-space --separator "|"')
+      const rows = stdout.trim().split('\n').filter(Boolean).map(line => {
+        const parts = line.split('|')
+        return {
+          id:          (parts[0] ?? '').trim(),
+          type:        (parts[1] ?? '').trim(),
+          date:        (parts[2] ?? '').trim(),
+          description: (parts[3] ?? '').trim(),
+          usedSpace:   (parts[4] ?? '').trim(),
+        }
+      })
+      return { success: true, snapshots: rows }
+    } catch (e: any) {
+      return { success: false, error: e.message, snapshots: [] }
+    }
+  })
+
+  ipcMain.handle('system-snapper-create', async (_, { description }: { description: string }) => {
+    const safe = description.replace(/"/g, "'")
+    try {
+      const { stdout } = await execPromise(`pkexec snapper -c root create -t single -d "${safe}"`)
+      return { success: true, id: stdout.trim() }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('system-snapper-delete', async (_, { id }: { id: string }) => {
+    if (!/^\d+$/.test(id)) return { success: false, error: 'Invalid snapshot ID' }
+    try {
+      await execPromise(`pkexec snapper -c root delete ${id}`)
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('system-snapper-rollback', async (_, { id }: { id: string }) => {
+    if (!/^\d+$/.test(id)) return { success: false, error: 'Invalid snapshot ID' }
+    try {
+      // Creates a new snapshot of current state, sets target as default subvol for next boot
+      const { stdout, stderr } = await execPromise(`pkexec snapper rollback ${id}`)
+      return { success: true, output: (stdout + stderr).trim() }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  // 2026 dmemcg-booster VRAM Squeeze
+  ipcMain.handle('gpu-vram-squeeze', async () => {
+    try {
+      // Aggressively free VRAM from background processes using dmemcg-booster
+      const { stdout } = await execPromise('pkexec dmemcg-booster --aggressive')
+      return { success: true, output: stdout || 'VRAM squeeze complete.' }
+    } catch (e: any) {
+      // Fallback: log failure but don't crash, it might not be installed
+      return { success: false, error: `dmemcg-booster failed or not installed: ${e.message}` }
+    }
+  })
+
+  // 2026 Zero-Latency Game Mode Macro (7800X3D + 4070 Ti Super)
+  ipcMain.handle('game-mode-toggle', async (_, enable: boolean) => {
+    return await runGameModeToggle(enable)
+  })
+
+  // 2026 WinBoat Sandbox (Windows in Docker)
+  ipcMain.handle('winboat-detect', async () => {
+    try {
+      const { stdout } = await execPromise('which winboat 2>/dev/null || echo ""')
+      return { success: !!stdout.trim() }
+    } catch { return { success: false } }
+  })
+
+  ipcMain.handle('winboat-run', async (_, exePath: string) => {
+    if (!exePath) return { success: false, error: 'No EXE path provided' }
+    try {
+      // 2026 CachyOS WinBoat Orchestration
+      // Mapping the EXE and enabling GPU + Xwayland for high-perf sandbox
+      const cmd = `winboat run --gpu --xwayland "${exePath}"`
+      // We run this in the background as it launches a window
+      exec(cmd, (error, stdout, stderr) => {
+        if (error) console.error(`[Vortex] WinBoat Error: ${error.message}`)
+      })
+      return { success: true, output: 'Sandbox session initialized.' }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  // 2026 x86-64-v4 Architecture Auditor
+  ipcMain.handle('system-audit-arch', async () => {
+    try {
+      // Logic: List all installed packages and their repos.
+      // Packages NOT in cachyos-v4 (or -v3) but present in generic repos are candidates.
+      const { stdout } = await execPromise("pacman -Sl | grep -v '\[installed\]' -v 'cachyos-v4' -v 'cachyos-v3' | grep '\[installed\]' || true")
+      const lines = stdout.trim().split('\n').filter(Boolean)
+      
+      const packages = lines.map(line => {
+        const [repo, name] = line.split(/\s+/)
+        return { name, repo, isGeneric: !repo.includes('v4') && !repo.includes('v3') }
+      }).filter(p => p.isGeneric).slice(0, 15) // Limit to top 15 for UI clarity
+
+      return { success: true, packages }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('system-rebuild-native', async (_, pkgName: string) => {
+    try {
+      const safePkg = pkgName.replace(/[^a-zA-Z0-9._\-+]/g, '')
+      if (!safePkg) return { success: false, log: 'Invalid package name' }
+      const helper = await detectAurHelper()
+      const cmd = helper !== 'pacman'
+        ? `${helper} -S --rebuild --noconfirm ${safePkg}`
+        : `pacman -S --noconfirm ${safePkg}`
+      const res = await runStreamingCmd('bash', ['-c', cmd])
+      return { success: res.success, log: res.log }
+    } catch (e: any) {
+      return { success: false, log: e.message }
+    }
+  })
+
+  // App Launcher
+  ipcMain.handle('apps-list', async () => {
+    try {
+      const dirs = [
+        `${homedir()}/.local/share/applications`,
+        '/usr/share/applications',
+        '/usr/local/share/applications',
+      ]
+      const apps: { name: string; exec: string; comment: string; categories: string; icon: string; path: string }[] = []
+      const seen = new Set<string>()
+      for (const dir of dirs) {
+        try {
+          const files = readdirSync(dir).filter(f => f.endsWith('.desktop'))
+          for (const file of files) {
+            try {
+              const content = readFileSync(join(dir, file), 'utf-8')
+              const get = (key: string) => {
+                const m = content.match(new RegExp(`^${key}=(.+)$`, 'm'))
+                return m ? m[1].trim() : ''
+              }
+              if (get('NoDisplay') === 'true' || get('Hidden') === 'true') continue
+              const name = get('Name')
+              if (!name || seen.has(name)) continue
+              seen.add(name)
+              apps.push({ name, exec: get('Exec'), comment: get('Comment'), categories: get('Categories'), icon: get('Icon'), path: join(dir, file) })
+            } catch {}
+          }
+        } catch {}
+      }
+      apps.sort((a, b) => a.name.localeCompare(b.name))
+      return { success: true, apps }
+    } catch (e: any) {
+      return { success: false, apps: [], error: e.message }
+    }
+  })
+
+  ipcMain.handle('apps-launch', async (_, { exec }: { exec: string }) => {
+    try {
+      const clean = exec.replace(/%[uUfFdDnNickvm]/g, '').trim()
+      spawn('bash', ['-c', clean], { detached: true, stdio: 'ignore' }).unref()
+      return { success: true }
+    } catch (e: any) { return { success: false, error: e.message } }
+  })
+
+  // Arch News Feed
+  ipcMain.handle('arch-news-fetch', async () => {
+    try {
+      const { data } = await axios.get('https://archlinux.org/feeds/news/', { timeout: 8000, responseType: 'text' })
+      const items: { title: string; link: string; date: string; summary: string }[] = []
+      const itemRe = /<item>([\s\S]*?)<\/item>/g
+      let m: RegExpExecArray | null
+      while ((m = itemRe.exec(data)) !== null) {
+        const block = m[1]
+        const title = (block.match(/<title>(?:<!\[CDATA\[)?(.*?)(?:\]\]>)?<\/title>/) ?? [])[1] ?? ''
+        const link  = (block.match(/<link>(.*?)<\/link>/) ?? [])[1] ?? ''
+        const date  = (block.match(/<pubDate>(.*?)<\/pubDate>/) ?? [])[1] ?? ''
+        const desc  = (block.match(/<description>(?:<!\[CDATA\[)?([\s\S]*?)(?:\]\]>)?<\/description>/) ?? [])[1] ?? ''
+        const summary = desc.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim().slice(0, 300)
+        items.push({ title: title.trim(), link: link.trim(), date: date.trim(), summary })
+      }
+      return { success: true, items: items.slice(0, 10) }
+    } catch (e: any) {
+      return { success: false, items: [], error: e.message }
+    }
+  })
+
+  // Dotfile Vault
+  ipcMain.handle('vault-list-backups', async () => {
+    try {
+      const dir = `${homedir()}/Vortex-Backups`
+      await execPromise(`mkdir -p "${dir}"`)
+      const { stdout } = await execPromise(`ls -t "${dir}" 2>/dev/null || true`)
+      const files = stdout.split('\n').map(f => f.trim()).filter(f => f.endsWith('.tar.gz'))
+      const backups = files.map(f => {
+        const m = f.match(/^vault_(.+)\.tar\.gz$/)
+        const tsStr = m ? m[1].replace(/_/g, ':').replace('T', 'T') : ''
+        const ts = new Date(tsStr).getTime()
+        return { filename: f, ts: isNaN(ts) ? 0 : ts, path: `${dir}/${f}` }
+      })
+      return { success: true, backups }
+    } catch (e: any) { return { success: false, backups: [], error: e.message } }
+  })
+
+  ipcMain.handle('vault-create', async (_, { paths }: { paths: string[] }) => {
+    try {
+      const dir = `${homedir()}/Vortex-Backups`
+      await execPromise(`mkdir -p "${dir}"`)
+      const ts = new Date().toISOString().replace(/:/g, '-').replace(/\..+/, '')
+      const outFile = `${dir}/vault_${ts}.tar.gz`
+      const expandedPaths = paths.map(p => p.replace(/^~/, homedir()))
+      const safeList = expandedPaths.map(p => `"${p.replace(/"/g, '\\"')}"`).join(' ')
+      await execPromise(`tar -czf "${outFile}" ${safeList} 2>/dev/null || tar -czf "${outFile}" ${safeList}`)
+      return { success: true, filename: `vault_${ts}.tar.gz` }
+    } catch (e: any) { return { success: false, error: e.message } }
+  })
+
+  ipcMain.handle('vault-restore', async (_, { filename }: { filename: string }) => {
+    try {
+      const dir = `${homedir()}/Vortex-Backups`
+      const safeFile = filename.replace(/[^a-zA-Z0-9._\-]/g, '')
+      const fullPath = `${dir}/${safeFile}`
+      if (!fullPath.startsWith(dir)) throw new Error('Invalid filename')
+      await execPromise(`tar -xzf "${fullPath}" -C /`)
+      return { success: true }
+    } catch (e: any) { return { success: false, error: e.message } }
+  })
+
+  ipcMain.handle('vault-delete', async (_, { filename }: { filename: string }) => {
+    try {
+      const dir = `${homedir()}/Vortex-Backups`
+      const safeFile = filename.replace(/[^a-zA-Z0-9._\-]/g, '')
+      await execPromise(`rm -f "${dir}/${safeFile}"`)
+      return { success: true }
+    } catch (e: any) { return { success: false, error: e.message } }
+  })
+
+  // Benchmark
+  ipcMain.handle('benchmark-run', async (_, { tests }: { tests: string[] }) => {
+    const results: Record<string, { score: number; unit: string; detail: string }> = {}
+    try {
+      if (tests.includes('cpu')) {
+        try {
+          const t0 = Date.now()
+          await execPromise(`bash -c "n=0; for i in $(seq 1 50000); do n=$((n+i)); done; echo $n"`)
+          const ms = Date.now() - t0
+          const score = Math.round(1000 / (ms / 1000) * 10) / 10
+          results.cpu = { score, unit: 'ops/s (higher=better)', detail: `50k iterations in ${ms}ms` }
+        } catch { results.cpu = { score: 0, unit: '', detail: 'failed' } }
+      }
+      if (tests.includes('disk_write')) {
+        try {
+          const tmpFile = `${tmpdir()}/vortex_bench_$$`
+          const t0 = Date.now()
+          await execPromise(`dd if=/dev/zero of="${tmpFile}" bs=1M count=256 conv=fdatasync 2>&1`)
+          const ms = Date.now() - t0
+          await execPromise(`rm -f "${tmpFile}"`)
+          const mbps = Math.round(256 / (ms / 1000))
+          results.disk_write = { score: mbps, unit: 'MB/s', detail: `256 MB sequential write in ${ms}ms` }
+        } catch { results.disk_write = { score: 0, unit: 'MB/s', detail: 'failed' } }
+      }
+      if (tests.includes('disk_read')) {
+        try {
+          const tmpFile = `${tmpdir()}/vortex_bench_read_$$`
+          await execPromise(`dd if=/dev/urandom of="${tmpFile}" bs=1M count=256 conv=fdatasync 2>/dev/null`)
+          const t0 = Date.now()
+          await execPromise(`dd if="${tmpFile}" of=/dev/null bs=1M 2>&1`)
+          const ms = Date.now() - t0
+          await execPromise(`rm -f "${tmpFile}"`)
+          const mbps = Math.round(256 / (ms / 1000))
+          results.disk_read = { score: mbps, unit: 'MB/s', detail: `256 MB sequential read in ${ms}ms` }
+        } catch { results.disk_read = { score: 0, unit: 'MB/s', detail: 'failed' } }
+      }
+      if (tests.includes('ram')) {
+        try {
+          const { stdout } = await execPromise(`dd if=/dev/zero bs=1M count=512 | dd of=/dev/null 2>&1 || true`)
+          const m = stdout.match(/([\d.]+)\s+MB\/s/)
+          const mbps = m ? Math.round(parseFloat(m[1])) : 0
+          results.ram = { score: mbps, unit: 'MB/s', detail: 'Memory throughput via dd' }
+        } catch { results.ram = { score: 0, unit: 'MB/s', detail: 'failed' } }
+      }
+      return { success: true, results }
+    } catch (e: any) {
+      return { success: false, results, error: e.message }
+    }
+  })
+
+  // UFW Firewall
+  ipcMain.handle('ufw-status', async () => {
+    try {
+      const { stdout } = await execPromise('sudo ufw status verbose 2>/dev/null || ufw status verbose 2>/dev/null || echo "ufw not available"')
+      const lines = stdout.split('\n')
+      const statusLine = lines.find(l => l.toLowerCase().startsWith('status:'))
+      const enabled = statusLine?.toLowerCase().includes('active') ?? false
+      const rules: { to: string; action: string; from: string; comment: string }[] = []
+      let inRules = false
+      for (const line of lines) {
+        if (line.startsWith('--')) { inRules = true; continue }
+        if (!inRules) continue
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        const m = trimmed.match(/^(\S+(?:\s+\(v6\))?)\s+(ALLOW|DENY|REJECT|LIMIT)\s+(.*?)(?:\s+#\s*(.*))?$/)
+        if (m) rules.push({ to: m[1], action: m[2], from: m[3].trim() || 'Anywhere', comment: m[4] ?? '' })
+      }
+      return { success: true, enabled, rules, raw: stdout }
+    } catch (e: any) {
+      return { success: false, enabled: false, rules: [], raw: '', error: e.message }
+    }
+  })
+
+  ipcMain.handle('ufw-enable', async (_, enable: boolean) => {
+    try {
+      const cmd = enable ? 'pkexec ufw enable' : 'pkexec ufw disable'
+      const { stdout } = await execPromise(cmd)
+      return { success: true, output: stdout.trim() }
+    } catch (e: any) { return { success: false, error: e.message } }
+  })
+
+  ipcMain.handle('ufw-add-rule', async (_, rule: { port: string; proto: string; action: string; from: string; comment: string }) => {
+    try {
+      const safePort = rule.port.replace(/[^0-9:]/g, '')
+      const safeFrom = rule.from.replace(/[^0-9./: ]/g, '')
+      const proto = ['tcp', 'udp', 'any'].includes(rule.proto) ? rule.proto : 'any'
+      const action = ['allow', 'deny', 'reject', 'limit'].includes(rule.action.toLowerCase()) ? rule.action.toLowerCase() : 'allow'
+      const portSpec = proto === 'any' ? safePort : `${safePort}/${proto}`
+      const fromSpec = safeFrom && safeFrom !== 'Anywhere' ? `from ${safeFrom} to any port ${safePort}` : portSpec
+      const commentFlag = rule.comment.trim() ? ` comment '${rule.comment.replace(/'/g, '')}'` : ''
+      await execPromise(`pkexec ufw ${action} ${fromSpec}${commentFlag}`)
+      return { success: true }
+    } catch (e: any) { return { success: false, error: e.message } }
+  })
+
+  ipcMain.handle('ufw-delete-rule', async (_, num: number) => {
+    try {
+      await execPromise(`pkexec bash -c "echo y | ufw delete ${Math.abs(Math.floor(num))}"`)
+      return { success: true }
+    } catch (e: any) { return { success: false, error: e.message } }
+  })
+
+  // SSH Keys
+  ipcMain.handle('ssh-list-keys', async () => {
+    try {
+      const sshDir = `${homedir()}/.ssh`
+      const { stdout: lsOut } = await execPromise(`ls "${sshDir}" 2>/dev/null || true`)
+      const files = lsOut.split('\n').map(f => f.trim()).filter(Boolean)
+      const pubFiles = files.filter(f => f.endsWith('.pub'))
+      const keys: { name: string; pubFile: string; privFile: string; type: string; fingerprint: string; comment: string; pubKey: string }[] = []
+      for (const pub of pubFiles) {
+        const name = pub.replace(/\.pub$/, '')
+        const privExists = files.includes(name)
+        const fullPub = `${sshDir}/${pub}`
+        const { stdout: content } = await execPromise(`cat "${fullPub}" 2>/dev/null || true`)
+        const parts = content.trim().split(' ')
+        const type = parts[0] ?? ''
+        const comment = parts[2] ?? ''
+        const { stdout: fp } = await execPromise(`ssh-keygen -lf "${fullPub}" 2>/dev/null || true`)
+        const fingerprint = fp.trim().split(' ').slice(0, 2).join(' ')
+        keys.push({ name, pubFile: pub, privFile: privExists ? name : '', type, fingerprint, comment, pubKey: content.trim() })
+      }
+      return { success: true, keys }
+    } catch (e: any) {
+      return { success: false, keys: [], error: e.message }
+    }
+  })
+
+  ipcMain.handle('ssh-generate-key', async (_, { type, bits, comment, filename }: { type: string; bits?: number; comment: string; filename: string }) => {
+    try {
+      const sshDir = `${homedir()}/.ssh`
+      const safeName = filename.replace(/[^a-zA-Z0-9_\-]/g, '_')
+      const outFile = `${sshDir}/${safeName}`
+      const bitsFlag = type === 'rsa' ? `-b ${bits ?? 4096}` : ''
+      await execPromise(`ssh-keygen -t ${type} ${bitsFlag} -C "${comment.replace(/"/g, '')}" -f "${outFile}" -N ""`)
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('ssh-delete-key', async (_, { name }: { name: string }) => {
+    try {
+      const sshDir = `${homedir()}/.ssh`
+      const safeName = name.replace(/[^a-zA-Z0-9_\-]/g, '_')
+      await execPromise(`rm -f "${sshDir}/${safeName}" "${sshDir}/${safeName}.pub"`)
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  // Cron
+  ipcMain.handle('cron-list', async () => {
+    try {
+      const { stdout } = await execPromise('crontab -l 2>/dev/null || true')
+      const lines = stdout.split('\n')
+      const entries: { id: string; raw: string; min: string; hour: string; dom: string; month: string; dow: string; command: string; comment: string; enabled: boolean }[] = []
+      let pendingComment = ''
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) { pendingComment = ''; continue }
+        if (trimmed.startsWith('#')) {
+          pendingComment = trimmed.slice(1).trim()
+          continue
+        }
+        if (trimmed.includes('=') && !trimmed.match(/^\S+\s+\S+\s+\S+\s+\S+\s+\S+\s+/)) { pendingComment = ''; continue }
+        const m = trimmed.match(/^(@\S+|\S+\s+\S+\s+\S+\s+\S+\s+\S+)\s+(.+)$/)
+        if (!m) { pendingComment = ''; continue }
+        const schedule = m[1].trim()
+        const command = m[2].trim()
+        let min = '*', hour = '*', dom = '*', month = '*', dow = '*'
+        if (schedule.startsWith('@')) {
+          min = schedule
+        } else {
+          const parts = schedule.split(/\s+/)
+          ;[min, hour, dom, month, dow] = parts
+        }
+        entries.push({ id: Math.random().toString(36).slice(2), raw: trimmed, min, hour, dom, month, dow, command, comment: pendingComment, enabled: true })
+        pendingComment = ''
+      }
+      return { success: true, entries }
+    } catch (e: any) {
+      return { success: false, entries: [], error: e.message }
+    }
+  })
+
+  ipcMain.handle('cron-save', async (_, { entries }: { entries: { min: string; hour: string; dom: string; month: string; dow: string; command: string; comment: string }[] }) => {
+    try {
+      const lines = entries.map(e => {
+        const comment = e.comment.trim() ? `# ${e.comment.trim()}\n` : ''
+        const schedule = e.min.startsWith('@') ? e.min : `${e.min} ${e.hour} ${e.dom} ${e.month} ${e.dow}`
+        return `${comment}${schedule} ${e.command}`
+      })
+      const crontab = lines.join('\n') + '\n'
+      await execPromise(`echo ${JSON.stringify(crontab)} | crontab -`)
+      return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+}
+
+/**
+ * 2026 Zero-Latency Game Mode Orchestrator
+ * Shared between UI and Agentic Guardian
+ */
+export async function runGameModeToggle(enable: boolean) {
+  const logs: string[] = []
+  try {
+    if (enable) {
+      // 1. VRAM Squeeze
+      logs.push('> Squeezing background VRAM...')
+      await execPromise('pkexec dmemcg-booster --aggressive').catch(() => {})
+
+      // 2. SCX Scheduler (lavd for gaming)
+      logs.push('> Switching to LAVD gaming scheduler...')
+      await execPromise('busctl call org.scx.Loader /org/scx/Loader org.scx.Loader SwitchScheduler su "lavd" 0').catch(() => {})
+
+      // 3. V-Cache Isolation: Pin AI to cores 8-15 (non-L3 CCD)
+      logs.push('> Isolating AI tasks to non-V-Cache cores (8-15)...')
+      const { stdout: pidsRaw } = await execPromise('pgrep -x ollama || true; pgrep -f "python.*comfyui" || true')
+      const pids = pidsRaw.trim().split('\n').filter(Boolean)
+      for (const pid of pids) {
+        await execPromise(`taskset -cp 8-15 ${pid}`).catch(() => {})
+      }
+      logs.push(`> Isolated ${pids.length} AI processes. System optimized for Gaming.`)
+    } else {
+      // 1. Stop SCX Scheduler
+      logs.push('> Reverting to default scheduler...')
+      await execPromise('busctl call org.scx.Loader /org/scx/Loader org.scx.Loader StopScheduler').catch(() => {})
+
+      // 2. Restore Core Affinity to all cores (0-15)
+      logs.push('> Restoring AI affinity to all cores (0-15)...')
+      const { stdout: pidsRaw } = await execPromise('pgrep -x ollama || true; pgrep -f "python.*comfyui" || true')
+      const pids = pidsRaw.trim().split('\n').filter(Boolean)
+      for (const pid of pids) {
+        await execPromise(`taskset -cp 0-15 ${pid}`).catch(() => {})
+      }
+      logs.push('> System restored to Balanced mode.')
+    }
+    return { success: true, log: logs.join('\n') }
+  } catch (e: any) {
+    return { success: false, log: `Game Mode Error: ${e.message}` }
+  }
 }

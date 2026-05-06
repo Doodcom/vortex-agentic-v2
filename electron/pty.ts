@@ -73,6 +73,10 @@ export function setupPtyHandlers(win: BrowserWindow) {
 
   ipcMain.handle('pty-get-default-tab', () => defaultTabId)
 
+  ipcMain.handle('pty-list-tabs', () =>
+    [...tabs.entries()].map(([id, entry]) => ({ id, alive: entry.alive }))
+  )
+
   ipcMain.handle('pty-create', () => createTab())
 
   ipcMain.handle('pty-close', (_, tabId: string) => {

@@ -19,4 +19,15 @@ export function notify(
     timestamp: Date.now() 
   }
   window.dispatchEvent(new CustomEvent('vortex-notify', { detail }))
+
+  // 2026 Native Wayland/Plasma Integration
+  if (Notification.permission === 'granted') {
+    new Notification(`VORTEX: ${title}`, { body: message })
+  } else if (Notification.permission !== 'denied') {
+    Notification.requestPermission().then(permission => {
+      if (permission === 'granted') {
+        new Notification(`VORTEX: ${title}`, { body: message })
+      }
+    })
+  }
 }

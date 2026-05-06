@@ -1,7 +1,93 @@
 import { useState, useEffect, useRef } from 'react'
-import { motion } from 'framer-motion'
-import { RefreshCcw, Package, ShieldCheck, AlertTriangle, Loader2, ChevronRight, Brain } from 'lucide-react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { RefreshCcw, Package, ShieldCheck, AlertTriangle, Loader2, ChevronRight, Brain, Newspaper, ExternalLink, ChevronDown, ChevronUp } from 'lucide-react'
 import { notify } from '../lib/notifications'
+
+interface NewsItem { title: string; link: string; date: string; summary: string }
+const NEWS_READ_KEY = 'vortex-arch-news-read'
+const BREAKING_KEYWORDS = ['warning', 'manual intervention', 'breaking', 'important', 'critical', 'migration', 'incompatible']
+
+function ArchNewsPanel() {
+  const [items, setItems] = useState<NewsItem[]>([])
+  const [loading, setLoading] = useState(false)
+  const [error, setError] = useState('')
+  const [readIds, setReadIds] = useState<Set<string>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(NEWS_READ_KEY) ?? '[]')) } catch { return new Set() }
+  })
+  const [expanded, setExpanded] = useState<string | null>(null)
+  const [open, setOpen] = useState(true)
+
+  const markRead = (title: string) => {
+    const next = new Set([...readIds, title])
+    setReadIds(next)
+    localStorage.setItem(NEWS_READ_KEY, JSON.stringify([...next]))
+  }
+
+  const fetch = async () => {
+    setLoading(true); setError('')
+    const res = await (window as any).electron.archNewsFetch?.()
+    setLoading(false)
+    if (res?.success) setItems(res.items)
+    else setError(res?.error ?? 'Failed to fetch news')
+  }
+
+  useEffect(() => { fetch() }, [])
+
+  const unreadCount = items.filter(i => !readIds.has(i.title)).length
+  const isBreaking = (title: string) => BREAKING_KEYWORDS.some(k => title.toLowerCase().includes(k))
+
+  return (
+    <div style={{ marginTop: '28px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '12px', overflow: 'hidden' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '14px 18px', borderBottom: open ? '1px solid rgba(255,255,255,0.05)' : 'none', cursor: 'pointer' }} onClick={() => setOpen(p => !p)}>
+        <Newspaper size={16} style={{ color: '#60a5fa', flexShrink: 0 }} />
+        <span style={{ flex: 1, fontSize: '12px', fontWeight: 700, color: '#f4f4f5', textTransform: 'uppercase', letterSpacing: '0.06em', fontFamily: 'monospace' }}>Arch Linux News</span>
+        {unreadCount > 0 && <span style={{ fontSize: '9px', padding: '2px 7px', borderRadius: '10px', background: 'rgba(239,68,68,0.15)', color: '#f87171', fontFamily: 'monospace', fontWeight: 700 }}>{unreadCount} new</span>}
+        <button onClick={e => { e.stopPropagation(); fetch() }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4b5563', padding: '2px' }}><RefreshCcw size={11} /></button>
+        {open ? <ChevronUp size={13} style={{ color: '#4b5563' }} /> : <ChevronDown size={13} style={{ color: '#4b5563' }} />}
+      </div>
+      {open && (
+        <div style={{ padding: '10px 14px 14px' }}>
+          {loading && <div style={{ fontSize: '11px', color: '#4b5563', fontFamily: 'monospace', padding: '8px 0' }}>Fetching feed…</div>}
+          {error && <div style={{ fontSize: '11px', color: '#f87171', fontFamily: 'monospace' }}>{error}</div>}
+          {!loading && !error && items.length === 0 && <div style={{ fontSize: '11px', color: '#4b5563', fontStyle: 'italic', fontFamily: 'monospace' }}>No news items.</div>}
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+            {items.map(item => {
+              const read = readIds.has(item.title)
+              const breaking = isBreaking(item.title)
+              const isExpanded = expanded === item.title
+              return (
+                <div key={item.title} style={{ background: breaking ? 'rgba(239,68,68,0.05)' : 'rgba(255,255,255,0.02)', border: `1px solid ${breaking ? 'rgba(239,68,68,0.18)' : 'rgba(255,255,255,0.05)'}`, borderRadius: '8px', opacity: read ? 0.5 : 1, transition: 'opacity 0.2s' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px', padding: '9px 12px', cursor: 'pointer' }} onClick={() => { setExpanded(isExpanded ? null : item.title); markRead(item.title) }}>
+                    {breaking && <AlertTriangle size={12} style={{ color: '#f87171', flexShrink: 0, marginTop: '2px' }} />}
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: '12px', fontWeight: 600, color: breaking ? '#fca5a5' : '#e2e8f0', marginBottom: '2px' }}>{item.title}</div>
+                      <div style={{ fontSize: '9px', color: '#4b5563', fontFamily: 'monospace' }}>{item.date}</div>
+                    </div>
+                    <button
+                      onClick={e => { e.stopPropagation(); (window as any).electron?.openExternal?.(item.link) }}
+                      style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#4b5563', padding: '2px', flexShrink: 0 }}
+                    >
+                      <ExternalLink size={11} />
+                    </button>
+                  </div>
+                  <AnimatePresence>
+                    {isExpanded && (
+                      <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} exit={{ height: 0 }} style={{ overflow: 'hidden' }}>
+                        <div style={{ padding: '0 12px 10px', fontSize: '11px', color: '#71717a', lineHeight: 1.6, borderTop: '1px solid rgba(255,255,255,0.04)', paddingTop: '8px' }}>
+                          {item.summary}{item.summary.length === 300 && '…'}
+                        </div>
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+      )}
+    </div>
+  )
+}
 
 export default function UpdatesView() {
   const [updates, setUpdates] = useState<{ repo: string[], aur: string[] }>({ repo: [], aur: [] })
@@ -171,6 +257,8 @@ export default function UpdatesView() {
           {isSyncingAI ? 'Syncing...' : 'Sync AI'}
         </button>
       </div>
+
+      <ArchNewsPanel />
 
       {(totalUpdates > 0 || isUpgrading || isSyncingAI) && (
         <motion.div 

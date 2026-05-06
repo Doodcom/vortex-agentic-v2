@@ -34,6 +34,14 @@ export default function SchedulerView() {
   const [boreApplying, setBoreApplying] = useState<string | null>(null)
   const [boreResult, setBoreResult] = useState<{ profile: string; output: string; partial: boolean } | null>(null)
   const [selectedMode, setSelectedMode] = useState(0)
+  const [cpuInfo, setCpuInfo] = useState<string | null>(null)
+
+  useEffect(() => {
+    window.electron.getSystemStats().then(s => {
+      const cpu = s?.cpu
+      if (cpu) setCpuInfo(`${cpu.brand} · ${cpu.cores}C · sched-ext enabled`)
+    }).catch(() => {})
+  }, [])
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -272,7 +280,7 @@ export default function SchedulerView() {
       <div style={{ display: 'flex', alignItems: 'center', gap: '8px', opacity: 0.4 }}>
         <Cpu size={10} style={{ color: '#52525b' }} />
         <span style={{ fontSize: '9px', fontFamily: 'monospace', color: '#3f3f46', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
-          Ryzen 7 7800X3D · 8C/1T · Zen 4 3D-VCache · sched-ext kernel 6.18
+          {cpuInfo ?? 'Loading CPU info...'}
         </span>
       </div>
 

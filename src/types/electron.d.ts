@@ -28,13 +28,17 @@ export interface ElectronAPI {
   ollamaChat: (payload: { model: string, messages: any[] }) => Promise<{ success: boolean, error?: string }>
   ollamaAgenticChat: (payload: { model: string, messages: any[] }) => Promise<{ success: boolean, error?: string }>
   ollamaOrchestrate: (payload: { model: string, messages: any[], customPrompt?: string, searxngUrl?: string }) => Promise<{ success: boolean, error?: string }>
+  ollamaPullModel: (payload: { name: string }) => Promise<{ success: boolean; error?: string }>
+  ollamaDeleteModel: (payload: { name: string }) => Promise<{ success: boolean; error?: string }>
   ollamaCancel: () => Promise<{ success: boolean }>
-  
+  ollamaPurge: () => Promise<{ success: boolean }>
+
   // System
   systemCheckUpdates: () => Promise<{ repo: string[]; aur: string[] }>
   systemUpgrade: () => Promise<{ success: boolean; output: string; error?: string }>
   aiUpdateComponents: () => Promise<{ success: boolean; log: string }>
   systemCleanup: (type: 'cache' | 'orphans' | 'logs' | 'all') => Promise<{ success: boolean; output: string; error?: string }>
+  systemOptimize: (type: 'ssd' | 'services' | 'performance') => Promise<{ success: boolean; output?: string; error?: string }>
   systemGetLogs: (lines?: number) => Promise<string>
 
   // DB / Persistence — Sessions
@@ -122,6 +126,7 @@ export interface ElectronAPI {
   memoryAdd: (fact: string) => Promise<{ success: boolean }>
   memoryDelete: (id: number) => Promise<{ success: boolean }>
   memoryClear: () => Promise<{ success: boolean }>
+  dbGetResourceHistory: (hours?: number) => Promise<{ ts: number; cpu: number; ram: number; gpu: number; disk: number; net_rx: number }[]>
 
   // GPU VRAM
   gpuVramStats: () => Promise<{ success: boolean; used: number; total: number; free: number; gpuUtil: number }>
@@ -145,9 +150,59 @@ export interface ElectronAPI {
   chwdInstall: (profile: string) => Promise<{ success: boolean; output?: string; error?: string }>
   cachyosRateMirrors: () => Promise<{ success: boolean; output?: string; error?: string }>
   fprintdStatus: () => Promise<{ success: boolean; active: boolean; devices: string }>
+  systemSnapperSnapshot: (desc?: string) => Promise<{ success: boolean; output?: string; error?: string }>
+  systemSnapperList: () => Promise<{ success: boolean; snapshots: { id: string; type: string; date: string; description: string; usedSpace: string }[]; error?: string }>
+  systemSnapperCreate: (p: { description: string }) => Promise<{ success: boolean; id?: string; error?: string }>
+  systemSnapperDelete: (p: { id: string }) => Promise<{ success: boolean; error?: string }>
+  systemSnapperRollback: (p: { id: string }) => Promise<{ success: boolean; output?: string; error?: string }>
+  gpuVramSqueeze: () => Promise<{ success: boolean; output?: string; error?: string }>
+  gameModeToggle: (enable: boolean) => Promise<{ success: boolean; log: string }>
+  winboatDetect: () => Promise<{ success: boolean }>
+  winboatRun: (path: string) => Promise<{ success: boolean; output?: string; error?: string }>
+  systemAuditArch: () => Promise<{ success: boolean; packages: { name: string; repo: string; isGeneric: boolean }[]; error?: string }>
+  systemRebuildNative: (pkg: string) => Promise<{ success: boolean; log: string }>
+  guardianToggle: (enable: boolean) => Promise<{ success: boolean; enabled: boolean }>
+  guardianStatus: () => Promise<{ enabled: boolean; activeOptimization: string }>
 
-  on: (channel: string, callback: (...args: any[]) => void) => void
-  removeListener: (channel: string) => void
+  // RAG
+  ragSelectProject: () => Promise<{ path: string; fileCount: number; cached?: boolean; indexing?: boolean } | null>
+  ragGetContext: (query: string) => Promise<string>
+  ragStatus: () => Promise<{ path: string | null; fileCount: number }>
+  ragClearCache: () => Promise<{ success: boolean }>
+
+  // App Launcher
+  appsList: () => Promise<{ success: boolean; apps: { name: string; exec: string; comment: string; categories: string; icon: string; path: string }[]; error?: string }>
+  appsLaunch: (p: { exec: string }) => Promise<{ success: boolean; error?: string }>
+
+  // Arch News
+  archNewsFetch: () => Promise<{ success: boolean; items: { title: string; link: string; date: string; summary: string }[]; error?: string }>
+
+  // Dotfile Vault
+  vaultListBackups: () => Promise<{ success: boolean; backups: { filename: string; ts: number; path: string }[]; error?: string }>
+  vaultCreate: (p: { paths: string[] }) => Promise<{ success: boolean; filename?: string; error?: string }>
+  vaultRestore: (p: { filename: string }) => Promise<{ success: boolean; error?: string }>
+  vaultDelete: (p: { filename: string }) => Promise<{ success: boolean; error?: string }>
+
+  // Benchmark
+  benchmarkRun: (payload: { tests: string[] }) => Promise<{ success: boolean; results: Record<string, { score: number; unit: string; detail: string }>; error?: string }>
+
+  // UFW
+  ufwStatus: () => Promise<{ success: boolean; enabled: boolean; rules: { to: string; action: string; from: string; comment: string }[]; raw: string; error?: string }>
+  ufwEnable: (enable: boolean) => Promise<{ success: boolean; output?: string; error?: string }>
+  ufwAddRule: (rule: { port: string; proto: string; action: string; from: string; comment: string }) => Promise<{ success: boolean; error?: string }>
+  ufwDeleteRule: (num: number) => Promise<{ success: boolean; error?: string }>
+
+  // SSH
+  sshListKeys: () => Promise<{ success: boolean; keys: { name: string; pubFile: string; privFile: string; type: string; fingerprint: string; comment: string; pubKey: string }[]; error?: string }>
+  sshGenerateKey: (p: { type: string; bits?: number; comment: string; filename: string }) => Promise<{ success: boolean; error?: string }>
+  sshDeleteKey: (p: { name: string }) => Promise<{ success: boolean; error?: string }>
+
+  // Cron
+  cronList: () => Promise<{ success: boolean; entries: { id: string; min: string; hour: string; dom: string; month: string; dow: string; command: string; comment: string; enabled: boolean }[]; error?: string }>
+  cronSave: (payload: { entries: { min: string; hour: string; dom: string; month: string; dow: string; command: string; comment: string }[] }) => Promise<{ success: boolean; error?: string }>
+
+  on: (channel: string, callback: (...args: any[]) => void) => (() => void)
+  removeListener: (channel: string, listener?: (...args: any[]) => void) => void
 }
 
 declare global {

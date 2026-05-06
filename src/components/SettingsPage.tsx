@@ -1,8 +1,13 @@
 import { useState, useEffect } from 'react'
 import { useTheme } from './ThemeProvider'
-import { Volume2, VolumeX, Zap, ZapOff, Palette, Bot, Check, Info, FileText, Brain, Trash2, Plus, Cpu, Fingerprint, Globe } from 'lucide-react'
+import { Volume2, VolumeX, Zap, ZapOff, Palette, Bot, Check, Info, FileText, Brain, Trash2, Plus, Cpu, Fingerprint, Globe, ShieldCheck, Bell } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { VORTEX_MODELS, DEFAULT_MODEL } from '../lib/models'
+import { notify } from '../lib/notifications'
+
+export const ALERT_THRESHOLDS_KEY = 'vortex-alert-thresholds'
+export interface AlertThresholds { cpu: number; ram: number; gpu: number }
+export const DEFAULT_THRESHOLDS: AlertThresholds = { cpu: 90, ram: 90, gpu: 95 }
 
 type ThemeType = 'vortex-red' | 'cyber-blue' | 'neon-gold' | 'matrix-green'
 
@@ -69,6 +74,83 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   )
 }
 
+function AlertThresholdsEditor() {
+  const [thresholds, setThresholds] = useState<AlertThresholds>(() => {
+    try { return { ...DEFAULT_THRESHOLDS, ...JSON.parse(localStorage.getItem(ALERT_THRESHOLDS_KEY) ?? '{}') } } catch { return DEFAULT_THRESHOLDS }
+  })
+  const [saved, setSaved] = useState(false)
+
+  const save = () => {
+    localStorage.setItem(ALERT_THRESHOLDS_KEY, JSON.stringify(thresholds))
+    setSaved(true)
+    setTimeout(() => setSaved(false), 2000)
+    notify('Alerts', 'Thresholds saved', 'success')
+  }
+
+  const metrics: { key: keyof AlertThresholds; label: string; sublabel: string; color: string }[] = [
+    { key: 'cpu', label: 'CPU Load', sublabel: 'Alert when CPU% exceeds this value', color: '#f87171' },
+    { key: 'ram', label: 'RAM Usage', sublabel: 'Alert when RAM% exceeds this value', color: '#60a5fa' },
+    { key: 'gpu', label: 'GPU VRAM', sublabel: 'Alert when VRAM% exceeds this value', color: '#a78bfa' },
+  ]
+
+  return (
+    <div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '14px', marginBottom: '16px' }}>
+        {metrics.map(({ key, label, sublabel, color }) => (
+          <div key={key} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '16px' }}>
+            <div style={{ flex: 1 }}>
+              <div style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: '#f4f4f5', letterSpacing: '0.03em' }}>{label}</div>
+              <div style={{ fontSize: '10px', color: '#52525b', marginTop: '2px' }}>{sublabel}</div>
+            </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexShrink: 0 }}>
+              <input
+                type="range"
+                min={0}
+                max={100}
+                value={thresholds[key]}
+                onChange={e => setThresholds(prev => ({ ...prev, [key]: Number(e.target.value) }))}
+                style={{ width: '120px', accentColor: color }}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '2px', width: '52px' }}>
+                <input
+                  type="number"
+                  min={0}
+                  max={100}
+                  value={thresholds[key]}
+                  onChange={e => setThresholds(prev => ({ ...prev, [key]: Math.max(0, Math.min(100, Number(e.target.value))) }))}
+                  style={{
+                    width: '40px', background: 'rgba(0,0,0,0.3)', border: '1px solid rgba(255,255,255,0.08)',
+                    borderRadius: '5px', padding: '3px 6px', fontSize: '11px', fontFamily: 'monospace',
+                    color: thresholds[key] === 0 ? '#4b5563' : color, textAlign: 'right',
+                  }}
+                />
+                <span style={{ fontSize: '10px', color: '#4b5563' }}>%</span>
+              </div>
+              {thresholds[key] === 0 && (
+                <span style={{ fontSize: '9px', fontFamily: 'monospace', color: '#3f3f46', textTransform: 'uppercase', letterSpacing: '0.1em', width: '32px' }}>OFF</span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+        {saved ? (
+          <motion.span initial={{ opacity: 0 }} animate={{ opacity: 1 }}
+            style={{ fontSize: '10px', fontFamily: 'monospace', color: 'var(--signal)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Check size={10} /> Thresholds saved
+          </motion.span>
+        ) : <span />}
+        <button
+          onClick={save}
+          style={{ padding: '7px 18px', borderRadius: '8px', fontSize: '10px', fontFamily: 'monospace', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: 'var(--crimson)' }}
+        >
+          Save Thresholds
+        </button>
+      </div>
+    </div>
+  )
+}
+
 export default function SettingsPage() {
   const { theme, setTheme, soundEnabled, setSoundEnabled, animationsEnabled, setAnimationsEnabled, playSound } = useTheme()
   const models = VORTEX_MODELS
@@ -120,6 +202,32 @@ export default function SettingsPage() {
   const [mirrorBusy, setMirrorBusy] = useState(false)
   const [mirrorOutput, setMirrorOutput] = useState('')
   const [fprintdInfo, setFprintdInfo] = useState<{ active: boolean; devices: string } | null>(null)
+  const [snapperBusy, setSnapperBusy] = useState(false)
+
+  const createSnapshot = async (desc?: string) => {
+    setSnapperBusy(true)
+    const res = await window.electron.systemSnapperSnapshot(desc)
+    setSnapperBusy(false)
+    if (res.success) {
+      notify('Safety', `Snapshot created: ${desc || 'Manual'}`, 'success')
+    } else {
+      notify('Safety', `Snapshot failed: ${res.error}`, 'error')
+    }
+    return res.success
+  }
+
+  const handleVramMode = async (mode: 'max' | 'budget') => {
+    // 2026 Best Practice: Snapshot before systemd/VRAM change
+    const snap = await createSnapshot(`VRAM mode switch to ${mode}`)
+    if (snap) {
+      const res = await window.electron.ollamaSetVramMode(mode)
+      if (res.success) {
+        notify('System', `VRAM mode set to ${mode}`, 'success')
+      } else {
+        alert(res.error)
+      }
+    }
+  }
 
   useEffect(() => {
     window.electron?.fprintdStatus?.().then(r => {
@@ -369,7 +477,7 @@ export default function SettingsPage() {
             {(['max', 'budget'] as const).map(mode => (
               <button
                 key={mode}
-                onClick={() => window.electron.ollamaSetVramMode(mode).then(r => { if (!r.success) alert(r.error) })}
+                onClick={() => handleVramMode(mode)}
                 style={{ padding: '7px 16px', borderRadius: '8px', fontSize: '10px', fontFamily: 'monospace', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer', background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.18)', color: 'var(--crimson)', transition: 'all 0.15s' }}
               >
                 VRAM: {mode}
@@ -383,6 +491,29 @@ export default function SettingsPage() {
             </button>
           </div>
         </div>
+      </Section>
+
+      {/* System Safety */}
+      <Section title="// System Safety">
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <ShieldCheck size={14} style={{ color: 'var(--crimson)' }} />
+            <div>
+              <div style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: '#f4f4f5', textTransform: 'uppercase', letterSpacing: '0.05em' }}>Btrfs Safety Net (Snapper)</div>
+              <div style={{ fontSize: '10px', color: '#52525b', marginTop: '2px' }}>Create a pre-change snapshot of your root filesystem</div>
+            </div>
+          </div>
+          <button
+            onClick={() => createSnapshot()}
+            disabled={snapperBusy}
+            style={{ fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.1em', color: snapperBusy ? '#52525b' : 'var(--crimson)', background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: '6px', padding: '5px 12px', cursor: snapperBusy ? 'default' : 'pointer' }}
+          >
+            {snapperBusy ? 'Creating...' : 'Snapshot Now'}
+          </button>
+        </div>
+        <p style={{ fontSize: '10px', color: '#52525b', marginLeft: '24px' }}>
+          Vortex creates automatic "pre" snapshots before package installs or system overrides. You can revert these via the CachyOS GRUB menu or <code style={{ color: '#71717a' }}>snapper</code> CLI.
+        </p>
       </Section>
 
       {/* AI Memory */}
@@ -506,6 +637,20 @@ export default function SettingsPage() {
             </div>
           </div>
         </div>
+      </Section>
+
+      {/* Resource Alerts */}
+      <Section title="// Resource Alerts">
+        <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '6px' }}>
+          <Bell size={14} style={{ color: '#71717a' }} />
+          <span style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: '#a1a1aa', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+            Alert Thresholds
+          </span>
+        </div>
+        <p style={{ fontSize: '10px', color: '#52525b', marginBottom: '16px', marginLeft: '26px' }}>
+          Vortex fires in-app and desktop notifications when a metric exceeds its threshold. Set to 0 to disable a metric. Alerts have a 5-minute cooldown per metric.
+        </p>
+        <AlertThresholdsEditor />
       </Section>
 
       {/* About */}

@@ -18,13 +18,15 @@ export function useOllama() {
   const setActiveModel = (m: string) => {
     setActiveModelState(m)
     localStorage.setItem('vortex-default-model', m)
+    window.dispatchEvent(new CustomEvent('vortex-model-change', { detail: m }))
   }
 
-  // Purge previous model from VRAM when changing models within Quantum AI
+  // Purge previous model from VRAM when changing models — skip on initial mount
+  const isFirstModelMount = useRef(true)
   useEffect(() => {
-    if ((window as any).electron?.ollamaPurge) {
-      console.log(`[Vortex] Model changed to ${activeModel}. Purging stale VRAM.`);
-      (window as any).electron.ollamaPurge();
+    if (isFirstModelMount.current) { isFirstModelMount.current = false; return }
+    if (window.electron?.ollamaPurge) {
+      window.electron.ollamaPurge()
     }
   }, [activeModel])
 
@@ -210,6 +212,7 @@ export function useOllama() {
 
     const handleTokenUsage = (data: { promptTokens: number; completionTokens: number }) => {
       setTokenUsage(data)
+      window.dispatchEvent(new CustomEvent('vortex-token-usage', { detail: data }))
     }
 
     const handleOrchAgent = (data: { agentId: number; role: string; status: 'working' | 'done'; output?: string }) => {
@@ -322,9 +325,9 @@ export function useOllama() {
   }, [createSession])
 
   const pullModel = useCallback(async (name: string) => {
-    if (!(window as any).electron) return
+    if (!window.electron) return
     setError(null)
-    const result = await (window as any).electron.ollamaPullModel({ name })
+    const result = await window.electron.ollamaPullModel({ name })
     if (!result.success) setError(result.error || `Failed to pull model ${name}`)
   }, [])
 

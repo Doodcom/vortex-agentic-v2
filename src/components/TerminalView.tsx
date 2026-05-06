@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback } from 'react'
 import { Plus, X, KeyRound, Search, Columns2, Rows2, Maximize2 } from 'lucide-react'
 import { AnimatePresence } from 'framer-motion'
 import TerminalSession from './TerminalSession'
+import { setTerminalQuery } from '../lib/terminalBridge'
 
 // ── Destructive patterns ────────────────────────────────────────────────────
 const DANGEROUS: Array<{ re: RegExp; reason: string }> = [
@@ -36,6 +37,27 @@ interface Tab {
 let nextId = 0
 let tabNameCounter = 1
 
+interface SavedSession {
+  tabs: { id: string; name: string }[]
+  histories: Record<string, string[]>
+  activeTabId: string
+}
+
+const SESSION_KEY = 'vortex-term-sessions'
+
+function loadSession(): SavedSession | null {
+  try { return JSON.parse(localStorage.getItem(SESSION_KEY) ?? 'null') } catch { return null }
+}
+
+function saveSession(tabs: Tab[], activeTabId: string) {
+  const data: SavedSession = {
+    tabs: tabs.map(t => ({ id: t.id, name: t.name })),
+    histories: Object.fromEntries(tabs.map(t => [t.id, t.history])),
+    activeTabId,
+  }
+  localStorage.setItem(SESSION_KEY, JSON.stringify(data))
+}
+
 interface TerminalViewProps { onAskAI?: (tab: string) => void }
 
 export default function TerminalView({ onAskAI }: TerminalViewProps) {
@@ -57,6 +79,8 @@ export default function TerminalView({ onAskAI }: TerminalViewProps) {
   const sudoPwRef = useRef<HTMLInputElement>(null)
   
   const [pastePrompt, setPastePrompt] = useState<{ text: string; tabId: string } | null>(null)
+  const [hungTabId, setHungTabId] = useState<string | null>(null)
+  const hungTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   // Sync paneIds with active tab if empty
   useEffect(() => {
@@ -122,18 +146,60 @@ export default function TerminalView({ onAskAI }: TerminalViewProps) {
     return () => window.removeEventListener('keydown', handler)
   }, [])
 
-  // Init default tab + IPC listeners
+  // Persist session whenever tabs or active tab change
+  useEffect(() => {
+    if (tabs.length > 0) saveSession(tabs, activeTabId)
+  }, [tabs, activeTabId])
+
+  // Init: restore from saved session or create fresh
   useEffect(() => {
     const el = (window as any).electron
     if (!el) return
 
-    el.ptyGetDefaultTab().then((defaultId: string) => {
-      const firstTab: Tab = { id: defaultId, name: `Terminal 1`, entries: [], cwd: '~', history: [], histIdx: -1, alive: true, input: '' }
-      setTabs([firstTab])
-      setActiveTabId(defaultId)
-      setPaneIds([defaultId])
-      tabNameCounter = 2
-    })
+    const init = async () => {
+      const [liveTabs, defaultId, saved] = await Promise.all([
+        el.ptyListTabs() as Promise<{ id: string; alive: boolean }[]>,
+        el.ptyGetDefaultTab() as Promise<string>,
+        Promise.resolve(loadSession()),
+      ])
+
+      const liveIds = new Set(liveTabs.map((t: { id: string }) => t.id))
+
+      // Determine which tabs to restore: saved tabs still alive in main process
+      const toRestore = saved
+        ? saved.tabs.filter(t => liveIds.has(t.id))
+        : [{ id: defaultId, name: 'Terminal 1' }]
+
+      if (toRestore.length === 0) toRestore.push({ id: defaultId, name: 'Terminal 1' })
+
+      // Fetch scrollback for each tab to restore as a visual entry
+      const restoredTabs: Tab[] = await Promise.all(
+        toRestore.map(async (t) => {
+          const buf: string = await el.ptyGetBuffer(t.id)
+          const history: string[] = saved?.histories?.[t.id] ?? []
+          const entries = buf.trim()
+            ? [{ id: nextId++, command: '(restored session)', dir: '~', output: buf, exitCode: 0 }]
+            : []
+          return { id: t.id, name: t.name, entries, cwd: '~', history, histIdx: -1, alive: true, input: '' }
+        })
+      )
+
+      // Track highest tab number used
+      const nums = restoredTabs.map(t => {
+        const m = t.name.match(/Terminal (\d+)/)
+        return m ? parseInt(m[1], 10) : 0
+      })
+      tabNameCounter = Math.max(...nums, restoredTabs.length) + 1
+
+      const savedActiveId = saved?.activeTabId ?? defaultId
+      const activeId = liveIds.has(savedActiveId) ? savedActiveId : restoredTabs[0].id
+
+      setTabs(restoredTabs)
+      setActiveTabId(activeId)
+      setPaneIds([activeId])
+    }
+
+    init()
 
     const onData = ({ tabId, text }: { tabId: string; text: string }) => {
       setTabs(prev => prev.map(t => {
@@ -148,6 +214,8 @@ export default function TerminalView({ onAskAI }: TerminalViewProps) {
     }
 
     const onDone = ({ tabId, exitCode, cwd: newCwd }: { tabId: string; exitCode: number; cwd: string }) => {
+      if (hungTimerRef.current) { clearTimeout(hungTimerRef.current); hungTimerRef.current = null }
+      setHungTabId(null)
       setTabs(prev => prev.map(t => {
         if (t.id !== tabId) return t
         const ri = [...t.entries].reverse().findIndex(e => e.exitCode === null)
@@ -172,7 +240,7 @@ export default function TerminalView({ onAskAI }: TerminalViewProps) {
     setTabs(prev => [...prev, { id: tabId, name, entries: [], cwd: '~', history: [], histIdx: -1, alive: true, input: '' }])
     setActiveTabId(tabId)
     setPaneIds([tabId])
-    el.ptySetActive(tabId)
+    await el.ptySetActive(tabId)
   }, [])
 
   const splitPane = async () => {
@@ -221,6 +289,9 @@ export default function TerminalView({ onAskAI }: TerminalViewProps) {
     if (el?.dbLogCommand) {
         el.dbLogCommand({ command: cmd, source: 'terminal' })
     }
+    if (hungTimerRef.current) clearTimeout(hungTimerRef.current)
+    setHungTabId(null)
+    hungTimerRef.current = setTimeout(() => setHungTabId(tabId), 30000)
     await el?.ptyWrite({ tabId, command: cmd })
   }, [])
 
@@ -357,6 +428,17 @@ export default function TerminalView({ onAskAI }: TerminalViewProps) {
 
           return (
             <div key={pid} style={{ ...sizeStyle, display: 'flex', flexDirection: 'column', minWidth: 0, minHeight: 0, position: 'relative' }}>
+              {hungTabId === pid && (
+                <div style={{ padding: '6px 14px', background: 'rgba(245,158,11,0.12)', borderBottom: '1px solid rgba(245,158,11,0.25)', display: 'flex', alignItems: 'center', gap: '10px' }}>
+                  <span style={{ fontSize: '9px', fontFamily: 'monospace', color: '#f59e0b', textTransform: 'uppercase', letterSpacing: '0.1em' }}>
+                    Command may be hung — press Ctrl+C to cancel
+                  </span>
+                  <button onClick={() => { (window as any).electron?.ptyWrite({ tabId: pid, command: '\x03' }); setHungTabId(null) }}
+                    style={{ marginLeft: 'auto', fontSize: '8px', fontFamily: 'monospace', textTransform: 'uppercase', background: 'rgba(245,158,11,0.15)', border: '1px solid rgba(245,158,11,0.3)', color: '#f59e0b', padding: '2px 8px', borderRadius: '4px', cursor: 'pointer' }}>
+                    Send Ctrl+C
+                  </button>
+                </div>
+              )}
               <TerminalSession
                 {...t}
                 active={activeTabId === pid}
@@ -367,7 +449,12 @@ export default function TerminalView({ onAskAI }: TerminalViewProps) {
                 onKeyDown={e => handleKeyDown(e, pid)}
                 onPaste={e => handlePaste(e, pid)}
                 onFocus={() => setActiveTabId(pid)}
-                onAskAI={onAskAI ? () => onAskAI('assistant') : () => {}}
+                onAskAI={onAskAI ? (entry) => {
+                  const query = `Command: ${entry.command}\nOutput:\n${entry.output}`
+                  setTerminalQuery(query)
+                  onAskAI('assistant')
+                  window.dispatchEvent(new Event('vortex-focus-ai'))
+                } : () => {}}
                 onClear={() => setTabs(prev => prev.map(x => x.id === pid ? { ...x, entries: [] } : x))}
               />
               {isFirst && hasTwo && (

@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Sparkles, Box, Wand2, ImageIcon, Loader2, Download, Film, Upload, X, Layers, SlidersHorizontal, Shuffle } from 'lucide-react'
+import { Sparkles, Box, Wand2, ImageIcon, Loader2, Download, Film, Upload, X, Layers, SlidersHorizontal, Shuffle, BookmarkPlus, Bookmark, Trash2, Check } from 'lucide-react'
 import { useComfySocket } from '../hooks/useComfySocket'
 import {
   getModels, getLoraNames, createWorkflow, createFluxWorkflow, createImg2ImgWorkflow,
@@ -10,6 +10,30 @@ import {
 import type { LoraEntry } from '../lib/comfyApi'
 import { useTheme } from './ThemeProvider'
 import { notify } from '../lib/notifications'
+
+interface ComfyPreset {
+  id: string
+  name: string
+  prompt: string
+  negativePrompt: string
+  model: string
+  resolution: string
+  steps: number
+  cfg: number
+  sampler: string
+  seed: number
+  loras: LoraEntry[]
+  createdAt: number
+}
+
+const PRESETS_KEY = 'vortex-comfy-presets'
+
+function loadPresets(): ComfyPreset[] {
+  try { return JSON.parse(localStorage.getItem(PRESETS_KEY) ?? '[]') } catch { return [] }
+}
+function savePresets(p: ComfyPreset[]) {
+  localStorage.setItem(PRESETS_KEY, JSON.stringify(p))
+}
 
 interface ImageViewProps {
   onAnimate?: (url: string) => void
@@ -106,6 +130,48 @@ export default function ImageView({ onAnimate }: ImageViewProps) {
       notify('Engine', 'Failed to fetch ComfyUI models', 'error')
     })
   }, [])
+
+  // Presets
+  const [presets, setPresets]         = useState<ComfyPreset[]>(loadPresets)
+  const [presetName, setPresetName]   = useState('')
+  const [showPresets, setShowPresets] = useState(false)
+  const [savedFlash, setSavedFlash]   = useState(false)
+  const presetInputRef = useRef<HTMLInputElement>(null)
+
+  const handleSavePreset = () => {
+    const name = presetName.trim() || `Preset ${presets.length + 1}`
+    const p: ComfyPreset = {
+      id: `${Date.now()}`,
+      name, prompt, negativePrompt, model: selectedModel,
+      resolution, steps, cfg, sampler: samplerName, seed, loras,
+      createdAt: Date.now(),
+    }
+    const next = [...presets, p]
+    setPresets(next)
+    savePresets(next)
+    setPresetName('')
+    setSavedFlash(true)
+    setTimeout(() => setSavedFlash(false), 1800)
+  }
+
+  const handleLoadPreset = (p: ComfyPreset) => {
+    setPrompt(p.prompt)
+    setNegativePrompt(p.negativePrompt)
+    setSelectedModel(p.model)
+    setResolution(p.resolution)
+    setSteps(p.steps)
+    setCfg(p.cfg)
+    setSamplerName(p.sampler)
+    setSeed(p.seed)
+    setLoras(p.loras)
+    notify('Preset Loaded', p.name, 'success')
+  }
+
+  const handleDeletePreset = (id: string) => {
+    const next = presets.filter(p => p.id !== id)
+    setPresets(next)
+    savePresets(next)
+  }
 
   const [lastError, setLastError] = useState<string | null>(null)
 
@@ -586,6 +652,78 @@ export default function ImageView({ onAnimate }: ImageViewProps) {
           </div>
         </div>
 
+        {/* Presets */}
+        <div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '10px' }}>
+            <label style={{ ...labelStyle, marginBottom: 0, cursor: 'pointer' }} onClick={() => setShowPresets(v => !v)}>
+              <Bookmark size={12} /> Presets
+              <span style={{ fontSize: '8px', color: '#3f3f46', marginLeft: '4px' }}>({presets.length})</span>
+            </label>
+            <button
+              onClick={() => { setShowPresets(true); setTimeout(() => presetInputRef.current?.focus(), 50) }}
+              title="Save current settings as preset"
+              style={{ display: 'flex', alignItems: 'center', gap: '4px', padding: '3px 9px', borderRadius: '6px', background: savedFlash ? 'rgba(34,211,238,0.12)' : 'rgba(255,255,255,0.03)', border: `1px solid ${savedFlash ? 'rgba(34,211,238,0.3)' : 'rgba(255,255,255,0.08)'}`, color: savedFlash ? 'var(--signal)' : '#52525b', fontSize: '9px', fontFamily: 'monospace', cursor: 'pointer', transition: 'all 0.2s' }}
+            >
+              {savedFlash ? <Check size={10} /> : <BookmarkPlus size={10} />}
+              {savedFlash ? 'Saved' : 'Save'}
+            </button>
+          </div>
+
+          <AnimatePresence>
+            {showPresets && (
+              <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }} style={{ overflow: 'hidden' }}>
+                <div style={{ display: 'flex', gap: '6px', marginBottom: '8px' }}>
+                  <input
+                    ref={presetInputRef}
+                    value={presetName}
+                    onChange={e => setPresetName(e.target.value)}
+                    onKeyDown={e => e.key === 'Enter' && handleSavePreset()}
+                    placeholder="Preset name..."
+                    style={{ flex: 1, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '6px', padding: '6px 10px', color: '#f4f4f5', fontSize: '11px', fontFamily: 'monospace', outline: 'none' }}
+                  />
+                  <button
+                    onClick={handleSavePreset}
+                    style={{ padding: '6px 12px', borderRadius: '6px', background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.2)', color: 'var(--signal)', fontSize: '10px', fontFamily: 'monospace', cursor: 'pointer', whiteSpace: 'nowrap' }}
+                  >
+                    + Save
+                  </button>
+                </div>
+
+                {presets.length === 0 ? (
+                  <div style={{ padding: '10px', textAlign: 'center', fontSize: '10px', fontFamily: 'monospace', color: '#3f3f46', fontStyle: 'italic', border: '1px dashed rgba(255,255,255,0.04)', borderRadius: '6px' }}>
+                    No saved presets yet
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', maxHeight: '200px', overflowY: 'auto' }}>
+                    {presets.map(p => (
+                      <div key={p.id} style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '7px 10px', borderRadius: '7px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.05)' }}>
+                        <div style={{ flex: 1, overflow: 'hidden' }}>
+                          <div style={{ fontSize: '11px', color: '#d4d4d8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{p.name}</div>
+                          <div style={{ fontSize: '8px', fontFamily: 'monospace', color: '#3f3f46', marginTop: '1px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                            {p.model.split('/').pop()?.split('.')[0] ?? p.model} · {p.resolution} · {p.steps}s
+                          </div>
+                        </div>
+                        <button
+                          onClick={() => handleLoadPreset(p)}
+                          style={{ padding: '3px 9px', borderRadius: '5px', background: 'rgba(34,211,238,0.08)', border: '1px solid rgba(34,211,238,0.15)', color: 'var(--signal)', fontSize: '8px', fontFamily: 'monospace', textTransform: 'uppercase', cursor: 'pointer', whiteSpace: 'nowrap' }}
+                        >
+                          Load
+                        </button>
+                        <button
+                          onClick={() => handleDeletePreset(p.id)}
+                          style={{ padding: '3px 6px', borderRadius: '5px', background: 'transparent', border: '1px solid rgba(255,255,255,0.06)', color: '#52525b', cursor: 'pointer', display: 'flex', alignItems: 'center' }}
+                        >
+                          <Trash2 size={9} />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
+        </div>
+
         {/* Positive Prompt */}
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -672,18 +810,31 @@ export default function ImageView({ onAnimate }: ImageViewProps) {
                   <p style={{ fontSize: '12px', fontWeight: 'bold', color: '#ef4444', textTransform: 'uppercase', letterSpacing: '0.1em', margin: 0 }}>Generation Failed</p>
                   <p style={{ fontSize: '11px', color: '#71717a', marginTop: '8px', lineHeight: 1.5 }}>{lastError}</p>
                 </div>
-                <button
-                  onClick={async () => {
-                    setLastError(null)
-                    if ((window as any).electron?.comfyPurge) {
-                      await (window as any).electron.comfyPurge()
-                      notify('VRAM', 'ComfyUI VRAM purged — ready to retry', 'success')
-                    }
-                  }}
-                  style={{ padding: '8px 20px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', color: '#ef4444', fontSize: '11px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.08em', cursor: 'pointer' }}
-                >
-                  Purge VRAM & Dismiss
-                </button>
+                <div style={{ display: 'flex', gap: '8px' }}>
+                  <button
+                    onClick={async () => {
+                      setLastError(null)
+                      if ((window as any).electron?.comfyPurge) {
+                        await (window as any).electron.comfyPurge()
+                        notify('VRAM', 'ComfyUI VRAM purged — ready to retry', 'success')
+                      }
+                    }}
+                    style={{ padding: '8px 20px', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.3)', borderRadius: '8px', color: '#ef4444', fontSize: '11px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.08em', cursor: 'pointer' }}
+                  >
+                    Purge VRAM
+                  </button>
+                  <button
+                    onClick={async () => {
+                      if ((window as any).electron?.gpuVramSqueeze) {
+                        const res = await (window as any).electron.gpuVramSqueeze()
+                        notify('VRAM Squeeze', res.success ? 'Background apps compressed' : res.error, res.success ? 'success' : 'error')
+                      }
+                    }}
+                    style={{ padding: '8px 20px', background: 'rgba(34,211,238,0.1)', border: '1px solid rgba(34,211,238,0.3)', borderRadius: '8px', color: '#22d3ee', fontSize: '11px', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.08em', cursor: 'pointer' }}
+                  >
+                    Squeeze VRAM
+                  </button>
+                </div>
               </motion.div>
             ) : !generatedImage && !isGenerating ? (
               <motion.div key="empty" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', color: 'rgba(255,255,255,0.05)' }}>

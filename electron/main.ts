@@ -3,12 +3,14 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { exec, spawn } from 'node:child_process'
 import { readFileSync, createWriteStream } from 'node:fs'
+import os from 'node:os'
 import si from 'systeminformation'
 import { setupOllamaHandlers } from './ollama'
 import { setupSystemHandlers } from './system'
 import { setupRagHandlers } from './rag'
-import { setupDbHandlers } from './db'
+import { setupDbHandlers, startResourcePoller } from './db'
 import { setupPtyHandlers } from './pty'
+import { guardian } from './VortexGuardian'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 
@@ -20,7 +22,7 @@ let tray: Tray | null = null
 let comfyProcess: any = null
 
 function startComfyUI() {
-  const comfyDir = path.join(process.env.HOME || '/home/doodcom', '.comfyui-headless')
+  const comfyDir = path.join(process.env.HOME || os.homedir(), '.comfyui-headless')
   const comfyPath = path.join(comfyDir, 'start-engine.sh')
   const logPath = path.join(app.getPath('userData'), 'comfyui.log')
   console.log('[Main] Starting ComfyUI backend in:', comfyDir)
@@ -43,7 +45,7 @@ function startComfyUI() {
 
 function createTray() {
   const iconPath = path.join(
-    process.env.HOME || '/home/doodcom',
+    process.env.HOME || os.homedir(),
     '.local/share/icons/hicolor/48x48/apps/vortex-agentic.png'
   )
   const icon = nativeImage.createFromPath(iconPath)
@@ -106,9 +108,11 @@ function createWindow() {
   if (win) {
     setupOllamaHandlers(win)
     setupSystemHandlers(win)
-    setupRagHandlers()
+    setupRagHandlers(win)
     setupDbHandlers()
+    startResourcePoller()
     setupPtyHandlers(win)
+    guardian.init(win)
   }
 }
 

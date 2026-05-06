@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react'
-import { Home, Shield, Bell, Lightbulb, Camera, Power, Activity, ExternalLink } from 'lucide-react'
+import { useState, useEffect, useRef, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
+import { Home, Shield, Bell, Lightbulb, Camera, Power, Activity, ExternalLink, RefreshCw } from 'lucide-react'
 import { useTheme } from './ThemeProvider'
 import { notify } from '../lib/notifications'
 
@@ -13,6 +13,8 @@ export default function HomeView() {
   const [cameraPreviews, setCameraPreviews] = useState<Record<string, string>>({})
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<'devices' | 'portal'>('devices')
+  const [liveRefreshKey, setLiveRefreshKey] = useState(0)
+  const liveRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   useEffect(() => {
     localStorage.setItem('vortex-ha-ip', haIp)
@@ -329,36 +331,19 @@ export default function HomeView() {
 
       {/* Live Stream Overlay */}
       {selectedEntity && (
-        <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.85)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px' }}>
-          <div style={{ position: 'relative', width: '100%', maxWidth: '1200px', height: '85vh', background: '#0d1525', borderRadius: '24px', border: '1px solid rgba(255,255,255,0.1)', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)' }}>
-            <div style={{ padding: '16px 24px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(255,255,255,0.02)' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-                <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: '#ef4444', boxShadow: '0 0 10px #ef4444', animation: 'pulse-dot 2s infinite' }} />
-                <span style={{ fontSize: '11px', fontWeight: 'bold', color: 'white', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.2em' }}>
-                   SYSTEM.LIVE_STREAM :: {selectedEntity.toUpperCase()}
-                </span>
-              </div>
-              <button 
-                onClick={() => setSelectedEntity(null)}
-                style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#ef4444', padding: '6px 16px', borderRadius: '8px', fontSize: '10px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s' }}
-              >
-                DISCONNECT FEED
-              </button>
-            </div>
-            
-            <div style={{ flex: 1, position: 'relative', background: '#000' }}>
-              <iframe 
-                src={`${haIp}/lovelace/0?dialog=more-info&entity_id=${selectedEntity}`}
-                style={{ width: '100%', height: '100%', border: 'none' }}
-                title="HA Live View"
-              />
-            </div>
-            
-            <div style={{ padding: '10px 24px', borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', justifyContent: 'center', background: 'rgba(0,0,0,0.2)' }}>
-              <span style={{ fontSize: '9px', color: '#52525b', fontFamily: 'monospace', letterSpacing: '0.05em' }}>VORTEX SECURE LINK :: END-TO-END ENCRYPTED SMART TUNNEL</span>
-            </div>
-          </div>
-        </div>
+        <LiveCameraOverlay
+          entityId={selectedEntity}
+          haIp={haIp}
+          haToken={haToken}
+          onClose={() => {
+            setSelectedEntity(null)
+            if (liveRefreshRef.current) clearInterval(liveRefreshRef.current)
+          }}
+          onOpenExternal={handleOpenExternal}
+          liveRefreshKey={liveRefreshKey}
+          setLiveRefreshKey={setLiveRefreshKey}
+          liveRefreshRef={liveRefreshRef}
+        />
       )}
 
       {/* PC Automation Logic Card */}
@@ -384,6 +369,125 @@ export default function HomeView() {
               </div>
             </div>
           ))}
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function LiveCameraOverlay({ entityId, haIp, haToken, onClose, onOpenExternal, liveRefreshKey, setLiveRefreshKey, liveRefreshRef }: {
+  entityId: string
+  haIp: string
+  haToken: string
+  onClose: () => void
+  onOpenExternal: (url: string) => void
+  liveRefreshKey: number
+  setLiveRefreshKey: Dispatch<SetStateAction<number>>
+  liveRefreshRef: MutableRefObject<ReturnType<typeof setInterval> | null>
+}) {
+  const [autoRefresh, setAutoRefresh] = useState(true)
+  const [liveSrc, setLiveSrc] = useState<string | null>(null)
+  const prevBlobRef = useRef<string | null>(null)
+
+  // HA camera_proxy requires Bearer auth header — <img src> can't send headers,
+  // so we fetch → blob URL on each refresh tick.
+  useEffect(() => {
+    let cancelled = false
+    const fetchFrame = async () => {
+      try {
+        const resp = await fetch(`${haIp}/api/camera_proxy/${entityId}`, {
+          headers: { Authorization: `Bearer ${haToken}` }
+        })
+        if (!resp.ok || cancelled) return
+        const blob = await resp.blob()
+        const url = URL.createObjectURL(blob)
+        if (cancelled) { URL.revokeObjectURL(url); return }
+        if (prevBlobRef.current) URL.revokeObjectURL(prevBlobRef.current)
+        prevBlobRef.current = url
+        setLiveSrc(url)
+      } catch { /* network error — overlay stays on last frame */ }
+    }
+    fetchFrame()
+    return () => { cancelled = true }
+  }, [liveRefreshKey, entityId, haIp, haToken])
+
+  // Revoke blob on unmount
+  useEffect(() => () => { if (prevBlobRef.current) URL.revokeObjectURL(prevBlobRef.current) }, [])
+
+  useEffect(() => {
+    if (autoRefresh) {
+      liveRefreshRef.current = setInterval(() => {
+        setLiveRefreshKey(k => k + 1)
+      }, 1500)
+    } else {
+      if (liveRefreshRef.current) clearInterval(liveRefreshRef.current)
+    }
+    return () => { if (liveRefreshRef.current) clearInterval(liveRefreshRef.current) }
+  }, [autoRefresh])
+
+  return (
+    <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.9)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px' }}>
+      <div style={{ position: 'relative', width: '100%', maxWidth: '1200px', height: '85vh', background: '#0d1525', borderRadius: '24px', border: '1px solid rgba(255,255,255,0.1)', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)' }}>
+        {/* Header */}
+        <div style={{ padding: '14px 24px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(255,255,255,0.02)', flexShrink: 0 }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: autoRefresh ? '#ef4444' : '#52525b', boxShadow: autoRefresh ? '0 0 10px #ef4444' : 'none', animation: autoRefresh ? 'pulse-dot 2s infinite' : 'none' }} />
+            <span style={{ fontSize: '11px', fontWeight: 'bold', color: 'white', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.15em' }}>
+              {entityId.replace('camera.', '').replace(/_/g, ' ')}
+            </span>
+            <span style={{ fontSize: '8px', color: '#52525b', fontFamily: 'monospace' }}>
+              {autoRefresh ? '· LIVE · 1.5s refresh' : '· PAUSED'}
+            </span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <button
+              onClick={() => setAutoRefresh(v => !v)}
+              title={autoRefresh ? 'Pause refresh' : 'Resume live refresh'}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', borderRadius: '8px', background: autoRefresh ? 'rgba(34,211,238,0.1)' : 'rgba(255,255,255,0.05)', border: `1px solid ${autoRefresh ? 'rgba(34,211,238,0.25)' : 'rgba(255,255,255,0.1)'}`, color: autoRefresh ? '#22d3ee' : '#71717a', fontSize: '9px', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              <RefreshCw size={10} />
+              {autoRefresh ? 'PAUSE' : 'RESUME'}
+            </button>
+            <button
+              onClick={() => onOpenExternal(`${haIp}/lovelace/0`)}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', borderRadius: '8px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.1)', color: '#a1a1aa', fontSize: '9px', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              <ExternalLink size={10} />
+              OPEN IN HA
+            </button>
+            <button
+              onClick={onClose}
+              style={{ background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', color: '#ef4444', padding: '5px 14px', borderRadius: '8px', fontSize: '10px', fontWeight: 'bold', cursor: 'pointer' }}
+            >
+              CLOSE
+            </button>
+          </div>
+        </div>
+
+        {/* Camera image */}
+        <div style={{ flex: 1, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
+          {liveSrc ? (
+            <img
+              src={liveSrc}
+              alt={entityId}
+              style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+            />
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', color: '#52525b' }}>
+              <Camera size={32} />
+              <span style={{ fontSize: '10px', fontFamily: 'monospace' }}>Fetching frame...</span>
+            </div>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div style={{ padding: '8px 24px', borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(0,0,0,0.2)', flexShrink: 0 }}>
+          <span style={{ fontSize: '9px', color: '#3f3f46', fontFamily: 'monospace' }}>
+            {haIp}/api/camera_proxy/{entityId} · Bearer auth
+          </span>
+          <span style={{ fontSize: '9px', color: '#52525b', fontFamily: 'monospace' }}>
+            FRAME #{liveRefreshKey}
+          </span>
         </div>
       </div>
     </div>

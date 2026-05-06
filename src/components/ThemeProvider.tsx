@@ -131,6 +131,14 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
         osc.start(now)
         osc.stop(now + 0.3)
         break
+      case 'error':
+        osc.frequency.setValueAtTime(440, now)
+        osc.frequency.exponentialRampToValueAtTime(220, now + 0.2)
+        gain.gain.setValueAtTime(0.12, now)
+        gain.gain.linearRampToValueAtTime(0, now + 0.2)
+        osc.start(now)
+        osc.stop(now + 0.2)
+        break
     }
   }
 

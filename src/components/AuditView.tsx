@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { ShieldCheck, Terminal, Bot, RefreshCw, Trash2, CheckCircle2, XCircle } from 'lucide-react'
+import { ShieldCheck, Terminal, Bot, RefreshCw, Trash2, CheckCircle2, XCircle, CalendarDays, X } from 'lucide-react'
 import { motion } from 'framer-motion'
 
 interface AuditEntry {
@@ -18,12 +18,22 @@ function fmtTime(unix: number): string {
   return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) + ' ' + d.toLocaleDateString([], { month: 'short', day: 'numeric' })
 }
 
+function dateToUnix(dateStr: string, endOfDay = false): number {
+  const d = new Date(dateStr)
+  if (endOfDay) { d.setHours(23, 59, 59, 999) }
+  return d.getTime() / 1000
+}
+
 export default function AuditView() {
   const [entries, setEntries] = useState<AuditEntry[]>([])
   const [loading, setLoading] = useState(true)
   const [filter, setFilter]   = useState<Filter>('all')
   const [search, setSearch]   = useState('')
+  const [dateFrom, setDateFrom] = useState('')
+  const [dateTo, setDateTo]     = useState('')
   const [clearConfirm, setClearConfirm] = useState(false)
+
+  const hasDateFilter = dateFrom !== '' || dateTo !== ''
 
   const load = useCallback(async () => {
     if (!(window as any).electron) return
@@ -46,6 +56,8 @@ export default function AuditView() {
     if (filter === 'ai'       && e.source !== 'ai')       return false
     if (filter === 'failed'   && (e.exit_code === null || e.exit_code === 0)) return false
     if (search && !e.command.toLowerCase().includes(search.toLowerCase())) return false
+    if (dateFrom && e.created_at < dateToUnix(dateFrom)) return false
+    if (dateTo   && e.created_at > dateToUnix(dateTo, true)) return false
     return true
   })
 
@@ -109,6 +121,33 @@ export default function AuditView() {
             placeholder="search commands..."
             style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '6px', padding: '3px 10px', color: '#f4f4f5', fontSize: '11px', fontFamily: 'monospace', outline: 'none', width: '180px' }}
           />
+
+          {/* Date range */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <CalendarDays size={11} style={{ color: '#52525b', flexShrink: 0 }} />
+            <input
+              type="date"
+              value={dateFrom}
+              onChange={e => setDateFrom(e.target.value)}
+              style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '6px', padding: '3px 8px', color: dateFrom ? '#f4f4f5' : '#52525b', fontSize: '10px', fontFamily: 'monospace', outline: 'none', width: '118px', colorScheme: 'dark' }}
+            />
+            <span style={{ color: '#3f3f46', fontSize: '9px', fontFamily: 'monospace' }}>→</span>
+            <input
+              type="date"
+              value={dateTo}
+              onChange={e => setDateTo(e.target.value)}
+              style={{ background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)', borderRadius: '6px', padding: '3px 8px', color: dateTo ? '#f4f4f5' : '#52525b', fontSize: '10px', fontFamily: 'monospace', outline: 'none', width: '118px', colorScheme: 'dark' }}
+            />
+            {hasDateFilter && (
+              <button
+                onClick={() => { setDateFrom(''); setDateTo('') }}
+                title="Clear date filter"
+                style={{ background: 'transparent', border: 'none', cursor: 'pointer', color: '#52525b', padding: '2px', display: 'flex', alignItems: 'center' }}
+              >
+                <X size={11} />
+              </button>
+            )}
+          </div>
 
           <div style={{ marginLeft: 'auto', display: 'flex', gap: '6px' }}>
             <button onClick={load} style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.06)', color: '#52525b', fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px' }}>

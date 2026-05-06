@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3'
 import path from 'node:path'
 import { app, ipcMain } from 'electron'
+import si from 'systeminformation'
 
 let db: Database.Database
 
@@ -48,6 +49,16 @@ export function setupDbHandlers() {
       embedding    BLOB,
       created_at   INTEGER NOT NULL DEFAULT (unixepoch())
     );
+
+    CREATE TABLE IF NOT EXISTS resource_history (
+      ts     INTEGER NOT NULL,
+      cpu    REAL    NOT NULL DEFAULT 0,
+      ram    REAL    NOT NULL DEFAULT 0,
+      gpu    REAL    NOT NULL DEFAULT 0,
+      disk   REAL    NOT NULL DEFAULT 0,
+      net_rx REAL    NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_rh_ts ON resource_history (ts);
   `)
 
   // Migrate: add session_id column if it doesn't exist yet
@@ -146,6 +157,12 @@ export function setupDbHandlers() {
     db.prepare('DELETE FROM ai_memory').run()
     return { success: true }
   })
+
+  // ── Resource History ───────────────────────────────────────────────────────
+  ipcMain.handle('db-get-resource-history', (_, hours: number = 24) => {
+    const since = Math.floor(Date.now() / 1000) - hours * 3600
+    return db.prepare('SELECT ts, cpu, ram, gpu, disk, net_rx FROM resource_history WHERE ts >= ? ORDER BY ts ASC').all(since)
+  })
 }
 
 export function getMemoriesList(): string[] {
@@ -161,6 +178,41 @@ export function addMemoryFact(fact: string): void {
 export function logAuditCommand(command: string, exitCode: number | null, source: string): void {
   if (!db) return
   db.prepare('INSERT INTO audit_log (command, exit_code, source) VALUES (?, ?, ?)').run(command, exitCode, source)
+}
+
+export function logResourceSample(cpu: number, ram: number, gpu: number, disk: number, net_rx: number): void {
+  if (!db) return
+  const ts = Math.floor(Date.now() / 1000)
+  db.prepare('INSERT INTO resource_history (ts, cpu, ram, gpu, disk, net_rx) VALUES (?, ?, ?, ?, ?, ?)').run(ts, cpu, ram, gpu, disk, net_rx)
+  // Prune entries older than 25h to keep DB lean
+  db.prepare('DELETE FROM resource_history WHERE ts < ?').run(ts - 90000)
+}
+
+let _pollerTimer: ReturnType<typeof setInterval> | null = null
+
+export function startResourcePoller(): void {
+  if (_pollerTimer) return
+  const collect = async () => {
+    try {
+      const [cpuLoad, mem, fsSize, netStats, gpu] = await Promise.all([
+        si.currentLoad(),
+        si.mem(),
+        si.fsSize(),
+        si.networkStats(),
+        si.graphics(),
+      ])
+      const cpu    = cpuLoad.currentLoad ?? 0
+      const ram    = mem.total ? (mem.used / mem.total) * 100 : 0
+      const rootFs = fsSize.find((f: any) => f.mount === '/') ?? fsSize[0]
+      const disk   = rootFs?.use ?? 0
+      const net_rx = (netStats[0]?.rx_sec ?? 0) / 1_000_000
+      const gpuCtl = gpu?.controllers?.[0]
+      const gpuPct = gpuCtl?.utilizationGpu ?? 0
+      logResourceSample(cpu, ram, gpuPct, disk, net_rx)
+    } catch { /* ignore collection errors */ }
+  }
+  collect()
+  _pollerTimer = setInterval(collect, 30_000)
 }
 
 // ── RAG persistence ────────────────────────────────────────────────────────
@@ -179,5 +231,5 @@ export function clearProjectRag(projectPath: string) {
 }
 
 export function getProjectRag(projectPath: string) {
-  return db.prepare('SELECT file_path as filePath, chunk_index as chunkIndex, content, embedding FROM rag_chunks WHERE project_path = ?').all() as any[]
+  return db.prepare('SELECT file_path as filePath, chunk_index as chunkIndex, content, embedding FROM rag_chunks WHERE project_path = ?').all(projectPath) as any[]
 }

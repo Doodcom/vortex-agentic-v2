@@ -76,7 +76,11 @@ export default function AssistantView() {
   const inputRef = useRef<HTMLTextAreaElement>(null)
 
   useEffect(() => {
-    const focus = () => inputRef.current?.focus()
+    const focus = () => {
+      const q = consumeTerminalQuery()
+      if (q) setInput(q)
+      inputRef.current?.focus()
+    }
     const newChat = () => clearMessages()
     window.addEventListener('vortex-focus-ai', focus)
     window.addEventListener('vortex-new-chat', newChat)
@@ -312,7 +316,8 @@ export default function AssistantView() {
         </div>
 
         {showNodeManager && (
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '8px', marginBottom: '16px' }}>
+          <>
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '8px', marginBottom: '12px' }}>
             <QuickModelBtn
               label="1.5B Nano"
               name="qwen2.5-coder:1.5b"
@@ -346,6 +351,75 @@ export default function AssistantView() {
               isActive={activeModel.includes('30b')}
             />
           </div>
+          {/* Context & Project controls moved here to keep the model bar compact */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px', paddingTop: '10px', borderTop: '1px solid rgba(255,255,255,0.04)' }}>
+            {/* Context selector */}
+            <div style={{ position: 'relative' }}>
+              <button
+                onClick={() => { setShowContextPicker(v => !v); playSound('hover') }}
+                title="Context injected with each message"
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '5px', padding: '3px 8px', borderRadius: '6px',
+                  background: showContextPicker ? 'rgba(168,85,247,0.1)' : 'rgba(255,255,255,0.02)',
+                  border: `1px solid ${showContextPicker ? 'rgba(168,85,247,0.3)' : 'rgba(255,255,255,0.06)'}`,
+                  color: showContextPicker ? '#a855f7' : '#52525b', fontSize: '9px', fontFamily: 'monospace',
+                  textTransform: 'uppercase', cursor: 'pointer',
+                }}
+              >
+                <Layers size={9} />
+                <span>Context ({[contextFlags.rag && !!project, contextFlags.terminal].filter(Boolean).length})</span>
+              </button>
+              {showContextPicker && (
+                <div
+                  className="context-picker-container"
+                  style={{
+                    position: 'absolute', top: '130%', left: 0, zIndex: 100,
+                    background: '#0d0e11', border: '1px solid rgba(168,85,247,0.4)', borderRadius: '12px',
+                    padding: '14px', minWidth: '240px', boxShadow: '0 8px 48px rgba(0,0,0,0.8)',
+                    maxHeight: '300px', overflowY: 'auto'
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
+                    <div style={{ fontSize: '8px', fontFamily: 'monospace', color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.15em' }}>Context Injection</div>
+                    <button onClick={() => setShowContextPicker(false)} style={{ background: 'none', border: 'none', color: '#3f3f46', cursor: 'pointer' }}><X size={10} /></button>
+                  </div>
+                  {([
+                    { key: 'rag' as const,      label: 'RAG Project',     sub: project ? (project.path.split('/').pop() ?? 'project') : 'No project indexed', available: !!project },
+                    { key: 'terminal' as const,  label: 'Terminal Buffer', sub: 'Last 2000 chars of output',   available: true },
+                    { key: 'memory' as const,    label: 'AI Memory',       sub: 'Persistent learned facts',    available: true },
+                  ]).map(({ key, label, sub, available }) => (
+                    <div key={key} onClick={() => available && toggleFlag(key)}
+                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', cursor: available ? 'pointer' : 'default', opacity: available ? 1 : 0.35 }}
+                    >
+                      <div>
+                        <div style={{ fontSize: '10px', fontFamily: 'monospace', color: contextFlags[key] && available ? '#f4f4f5' : '#71717a' }}>{label}</div>
+                        <div style={{ fontSize: '8px', color: '#3f3f46', marginTop: '1px' }}>{sub}</div>
+                      </div>
+                      <div style={{ width: '28px', height: '16px', borderRadius: '8px', background: contextFlags[key] && available ? '#a855f7' : 'rgba(255,255,255,0.08)', position: 'relative', flexShrink: 0, transition: 'background 0.2s' }}>
+                        <div style={{ position: 'absolute', top: '2px', left: contextFlags[key] && available ? '14px' : '2px', width: '12px', height: '12px', borderRadius: '50%', background: 'white', transition: 'left 0.2s' }} />
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button
+               onClick={() => { handleSelectProject(); playSound('click'); }}
+               disabled={isScanning}
+               title={project ? `Project: ${project.path}` : "Index Local Project"}
+               style={{
+                 display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', borderRadius: '6px',
+                 background: project ? 'rgba(34,211,238,0.05)' : 'transparent',
+                 border: `1px solid ${project ? 'rgba(34,211,238,0.1)' : 'rgba(255,255,255,0.06)'}`,
+                 color: project ? 'var(--signal)' : '#52525b', fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase',
+                 cursor: isScanning ? 'default' : 'pointer'
+               }}
+             >
+               <FolderOpen size={10} />
+               <span>{project ? `Project: ${project.path.split('/').pop()}` : 'No Project'}</span>
+             </button>
+          </div>
+          </>
         )}
 
         {pullProgress && (
@@ -364,7 +438,7 @@ export default function AssistantView() {
           </div>
         )}
 
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(0,0,0,0.2)', padding: '8px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.03)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', rowGap: '6px', background: 'rgba(0,0,0,0.2)', padding: '8px 12px', borderRadius: '10px', border: '1px solid rgba(255,255,255,0.03)' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
             <Bot size={16} className="text-zinc-500" />
             <select
@@ -427,74 +501,7 @@ export default function AssistantView() {
             </button>
           </div>
           
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            {/* Context selector */}
-            <div style={{ position: 'relative' }}>
-              <button
-                onClick={() => { setShowContextPicker(v => !v); playSound('hover') }}
-                title="Context injected with each message"
-                style={{
-                  display: 'flex', alignItems: 'center', gap: '5px', padding: '3px 8px', borderRadius: '6px',
-                  background: showContextPicker ? 'rgba(168,85,247,0.1)' : 'rgba(255,255,255,0.02)',
-                  border: `1px solid ${showContextPicker ? 'rgba(168,85,247,0.3)' : 'rgba(255,255,255,0.06)'}`,
-                  color: showContextPicker ? '#a855f7' : '#52525b', fontSize: '9px', fontFamily: 'monospace',
-                  textTransform: 'uppercase', cursor: 'pointer',
-                }}
-              >
-                <Layers size={9} />
-                <span>Context ({[contextFlags.rag && !!project, contextFlags.terminal].filter(Boolean).length})</span>
-              </button>
-              {showContextPicker && (
-                <div 
-                  className="context-picker-container"
-                  style={{
-                    position: 'absolute', bottom: '130%', left: 0, zIndex: 100,
-                    background: '#0d0e11', border: '1px solid rgba(168,85,247,0.4)', borderRadius: '12px',
-                    padding: '14px', minWidth: '240px', boxShadow: '0 8px 48px rgba(0,0,0,0.8)',
-                    maxHeight: '300px', overflowY: 'auto'
-                  }}
-                >
-                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
-                    <div style={{ fontSize: '8px', fontFamily: 'monospace', color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.15em' }}>Context Injection</div>
-                    <button onClick={() => setShowContextPicker(false)} style={{ background: 'none', border: 'none', color: '#3f3f46', cursor: 'pointer' }}><X size={10} /></button>
-                  </div>
-                  {([
-                    { key: 'rag' as const,      label: 'RAG Project',     sub: project ? (project.path.split('/').pop() ?? 'project') : 'No project indexed', available: !!project },
-                    { key: 'terminal' as const,  label: 'Terminal Buffer', sub: 'Last 2000 chars of output',   available: true },
-                    { key: 'memory' as const,    label: 'AI Memory',       sub: 'Persistent learned facts',    available: true },
-                  ]).map(({ key, label, sub, available }) => (
-                    <div key={key} onClick={() => available && toggleFlag(key)}
-                      style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '7px 0', borderBottom: '1px solid rgba(255,255,255,0.04)', cursor: available ? 'pointer' : 'default', opacity: available ? 1 : 0.35 }}
-                    >
-                      <div>
-                        <div style={{ fontSize: '10px', fontFamily: 'monospace', color: contextFlags[key] && available ? '#f4f4f5' : '#71717a' }}>{label}</div>
-                        <div style={{ fontSize: '8px', color: '#3f3f46', marginTop: '1px' }}>{sub}</div>
-                      </div>
-                      <div style={{ width: '28px', height: '16px', borderRadius: '8px', background: contextFlags[key] && available ? '#a855f7' : 'rgba(255,255,255,0.08)', position: 'relative', flexShrink: 0, transition: 'background 0.2s' }}>
-                        <div style={{ position: 'absolute', top: '2px', left: contextFlags[key] && available ? '14px' : '2px', width: '12px', height: '12px', borderRadius: '50%', background: 'white', transition: 'left 0.2s' }} />
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-
-            <button
-               onClick={() => { handleSelectProject(); playSound('click'); }}
-               disabled={isScanning}
-               title={project ? `Project: ${project.path}` : "Index Local Project"}
-               style={{ 
-                 display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', borderRadius: '6px',
-                 background: project ? 'rgba(34,211,238,0.05)' : 'transparent', 
-                 border: `1px solid ${project ? 'rgba(34,211,238,0.1)' : 'transparent'}`,
-                 color: project ? 'var(--signal)' : '#52525b', fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase',
-                 cursor: isScanning ? 'default' : 'pointer'
-               }}
-             >
-               <FolderOpen size={10} />
-               <span>{project ? 'Project Active' : 'No Project'}</span>
-             </button>
-
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
              <button
                onClick={() => { handleDiagnose(); playSound('click'); }}
                disabled={isStreaming || isDiagnosing}
@@ -663,13 +670,22 @@ export default function AssistantView() {
             )
           })}
           {error && (
-            <motion.div 
+            <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--crimson)', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', padding: '16px', borderRadius: '16px' }}
+              style={{ display: 'flex', flexDirection: 'column', gap: '6px', color: 'var(--crimson)', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', padding: '16px', borderRadius: '16px' }}
             >
-              <AlertCircle size={20} />
-              <span style={{ fontSize: '12px', fontFamily: 'monospace', textTransform: 'uppercase' }}>{error}</span>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <AlertCircle size={20} />
+                <span style={{ fontSize: '12px', fontFamily: 'monospace', textTransform: 'uppercase' }}>
+                  {error.includes('ECONNREFUSED') || error.includes('connect') ? 'Ollama is not running' : error}
+                </span>
+              </div>
+              {(error.includes('ECONNREFUSED') || error.includes('connect')) && (
+                <span style={{ fontSize: '10px', fontFamily: 'monospace', color: '#a1a1aa', paddingLeft: '28px' }}>
+                  Run: <code style={{ color: '#22d3ee' }}>sudo systemctl start ollama</code>
+                </span>
+              )}
             </motion.div>
           )}
         </AnimatePresence>

@@ -11,6 +11,7 @@ contextBridge.exposeInMainWorld('electron', {
   ollamaAgenticChat: (payload: { model: string, messages: any[], customPrompt?: string }) => ipcRenderer.invoke('ollama-agentic-chat', payload),
   ollamaOrchestrate: (payload: { model: string, messages: any[], customPrompt?: string, searxngUrl?: string }) => ipcRenderer.invoke('ollama-orchestrate', payload),
   ollamaPullModel: (payload: { name: string }) => ipcRenderer.invoke('ollama-pull-model', payload),
+  ollamaDeleteModel: (payload: { name: string }) => ipcRenderer.invoke('ollama-delete-model', payload),
   ollamaCancel: () => ipcRenderer.invoke('ollama-cancel'),
   ollamaPurge: () => ipcRenderer.invoke('ollama-purge'),
   
@@ -28,6 +29,7 @@ contextBridge.exposeInMainWorld('electron', {
   ragSelectProject: () => ipcRenderer.invoke('rag-select-project'),
   ragGetContext: (query: string) => ipcRenderer.invoke('rag-get-context', query),
   ragStatus: () => ipcRenderer.invoke('rag-status'),
+  ragClearCache: () => ipcRenderer.invoke('rag-clear-cache'),
 
   // DB / Audit Log
   dbLogCommand: (entry: { command: string; exit_code?: number; source?: string; session_id?: number }) => ipcRenderer.invoke('db-log-command', entry),
@@ -47,6 +49,7 @@ contextBridge.exposeInMainWorld('electron', {
 
   // PTY / Terminal
   ptyGetDefaultTab: () => ipcRenderer.invoke('pty-get-default-tab'),
+  ptyListTabs: () => ipcRenderer.invoke('pty-list-tabs'),
   ptyCreate: () => ipcRenderer.invoke('pty-create'),
   ptyClose: (tabId: string) => ipcRenderer.invoke('pty-close', tabId),
   ptySetActive: (tabId: string) => ipcRenderer.invoke('pty-set-active', tabId),
@@ -113,6 +116,7 @@ contextBridge.exposeInMainWorld('electron', {
   memoryAdd: (fact: string) => ipcRenderer.invoke('memory-add', fact),
   memoryDelete: (id: number) => ipcRenderer.invoke('memory-delete', id),
   memoryClear: () => ipcRenderer.invoke('memory-clear'),
+  dbGetResourceHistory: (hours?: number) => ipcRenderer.invoke('db-get-resource-history', hours),
 
   // Docker
   dockerList: () => ipcRenderer.invoke('docker-list'),
@@ -131,13 +135,60 @@ contextBridge.exposeInMainWorld('electron', {
   chwdInstall: (profile: string) => ipcRenderer.invoke('chwd-install', profile),
   cachyosRateMirrors: () => ipcRenderer.invoke('cachyos-rate-mirrors'),
   fprintdStatus: () => ipcRenderer.invoke('fprintd-status'),
+  systemSnapperSnapshot: (desc?: string) => ipcRenderer.invoke('system-snapper-snapshot', desc),
+  systemSnapperList: () => ipcRenderer.invoke('system-snapper-list'),
+  systemSnapperCreate: (p: { description: string }) => ipcRenderer.invoke('system-snapper-create', p),
+  systemSnapperDelete: (p: { id: string }) => ipcRenderer.invoke('system-snapper-delete', p),
+  systemSnapperRollback: (p: { id: string }) => ipcRenderer.invoke('system-snapper-rollback', p),
+  gpuVramSqueeze: () => ipcRenderer.invoke('gpu-vram-squeeze'),
+  gameModeToggle: (enable: boolean) => ipcRenderer.invoke('game-mode-toggle', enable),
+  winboatDetect: () => ipcRenderer.invoke('winboat-detect'),
+  winboatRun: (path: string) => ipcRenderer.invoke('winboat-run', path),
+  systemAuditArch: () => ipcRenderer.invoke('system-audit-arch'),
+  systemRebuildNative: (pkg: string) => ipcRenderer.invoke('system-rebuild-native', pkg),
+  guardianToggle: (enable: boolean) => ipcRenderer.invoke('guardian-toggle', enable),
+  guardianStatus: () => ipcRenderer.invoke('guardian-status'),
 
   on: (channel: string, callback: (...args: any[]) => void) => {
-    ipcRenderer.on(channel, (_, ...args) => callback(...args))
+    const listener = (_: any, ...args: any[]) => callback(...args)
+    ipcRenderer.on(channel, listener)
+    return () => ipcRenderer.removeListener(channel, listener)
   },
-  removeListener: (channel: string) => {
-    ipcRenderer.removeAllListeners(channel)
+  removeListener: (channel: string, listener?: (...args: any[]) => void) => {
+    if (listener) ipcRenderer.removeListener(channel, listener)
+    else ipcRenderer.removeAllListeners(channel)
   },
+  // App Launcher
+  appsList: () => ipcRenderer.invoke('apps-list'),
+  appsLaunch: (p: { exec: string }) => ipcRenderer.invoke('apps-launch', p),
+
+  // Arch News
+  archNewsFetch: () => ipcRenderer.invoke('arch-news-fetch'),
+
+  // Dotfile Vault
+  vaultListBackups: () => ipcRenderer.invoke('vault-list-backups'),
+  vaultCreate: (p: { paths: string[] }) => ipcRenderer.invoke('vault-create', p),
+  vaultRestore: (p: { filename: string }) => ipcRenderer.invoke('vault-restore', p),
+  vaultDelete: (p: { filename: string }) => ipcRenderer.invoke('vault-delete', p),
+
+  // Benchmark
+  benchmarkRun: (payload: { tests: string[] }) => ipcRenderer.invoke('benchmark-run', payload),
+
+  // UFW
+  ufwStatus: () => ipcRenderer.invoke('ufw-status'),
+  ufwEnable: (enable: boolean) => ipcRenderer.invoke('ufw-enable', enable),
+  ufwAddRule: (rule: { port: string; proto: string; action: string; from: string; comment: string }) => ipcRenderer.invoke('ufw-add-rule', rule),
+  ufwDeleteRule: (num: number) => ipcRenderer.invoke('ufw-delete-rule', num),
+
+  // SSH
+  sshListKeys: () => ipcRenderer.invoke('ssh-list-keys'),
+  sshGenerateKey: (p: { type: string; bits?: number; comment: string; filename: string }) => ipcRenderer.invoke('ssh-generate-key', p),
+  sshDeleteKey: (p: { name: string }) => ipcRenderer.invoke('ssh-delete-key', p),
+
+  // Cron
+  cronList: () => ipcRenderer.invoke('cron-list'),
+  cronSave: (payload: { entries: any[] }) => ipcRenderer.invoke('cron-save', payload),
+
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
   showContextMenu: (props: any) => ipcRenderer.invoke('show-context-menu', props)
 })

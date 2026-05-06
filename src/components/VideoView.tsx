@@ -414,9 +414,20 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
             <span style={{ fontSize: '9px', color: vramStats ? (vramStats.used / vramStats.total > 0.85 ? '#ef4444' : '#3f3f46') : '#3f3f46', fontWeight: 'bold', letterSpacing: '0.1em' }}>
               {vramStats ? `VRAM ${vramStats.used}/${vramStats.total}MB · GPU ${vramStats.gpuUtil}%` : 'VRAM: —'}
             </span>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-              <span style={{ fontSize: '9px', color: status === 'connected' ? '#a855f7' : '#ef4444' }}>{status.toUpperCase()}</span>
-              <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: status === 'connected' ? '#a855f7' : '#ef4444', boxShadow: status === 'connected' ? '0 0 5px #a855f7' : 'none' }} />
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <button
+                onClick={async () => {
+                  const res = await (window as any).electron?.gpuVramSqueeze?.()
+                  if (res?.success) notify('VRAM', 'Background VRAM squeezed', 'success')
+                }}
+                style={{ background: 'none', border: '1px solid rgba(168,85,247,0.3)', borderRadius: '4px', color: '#a855f7', fontSize: '8px', padding: '2px 6px', cursor: 'pointer', fontFamily: 'monospace' }}
+              >
+                SQUEEZE
+              </button>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span style={{ fontSize: '9px', color: status === 'connected' ? '#a855f7' : '#ef4444' }}>{status.toUpperCase()}</span>
+                <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: status === 'connected' ? '#a855f7' : '#ef4444', boxShadow: status === 'connected' ? '0 0 5px #a855f7' : 'none' }} />
+              </div>
             </div>
           </div>
         </div>

@@ -3,38 +3,88 @@ import {
   Package, MessageSquare,
   Terminal as TerminalIcon, Settings, Palette, Server, Activity, Wifi,
   Clock, HardDrive, ShieldCheck, ScrollText, Power, Sparkles, Video, Box, Layers,
-  Library, Brain, Home, Cpu
+  Library, Brain, Home, Cpu, Shield, BotMessageSquare, Camera, LineChart, GitBranch, CalendarClock, KeyRound, FlameKindling, Gauge, Archive, Variable, AppWindow, HeartPulse
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 import { cn } from '../lib/utils'
 import { useTheme } from './ThemeProvider'
 
-export const navItems = [
-  { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
-  { id: 'home',      label: 'Home Assistant', icon: Home },
-  { id: 'image-gen', label: 'Image Gen',     icon: Sparkles },
-  { id: 'video-gen', label: 'Video Gen',     icon: Video },
-  { id: 'gallery',   label: 'AI Gallery',   icon: Library },
-  { id: 'memory',    label: 'AI Memory',    icon: Brain },
-  { id: 'assistant', label: 'Quantum AI', icon: MessageSquare },
-  { id: 'terminal', label: 'Terminal', icon: TerminalIcon },
-  { id: 'processes', label: 'Processes', icon: Activity },
-  { id: 'docker',    label: 'Docker',      icon: Box },
-  { id: 'services',  label: 'Services',  icon: Server },
-  { id: 'updates', label: 'Updates', icon: Zap },
-  { id: 'optimizer', label: 'Optimizer', icon: Rocket },
-  { id: 'cleaner', label: 'Cleaner', icon: Trash2 },
-  { id: 'packages', label: 'Packages', icon: Package },
-  { id: 'depgraph', label: 'Dependency Graph', icon: Layers },
-  { id: 'network',   label: 'Network',   icon: Wifi },
-  { id: 'boot',      label: 'Boot Analyser', icon: Clock },
-  { id: 'disk',      label: 'Disk Monitor',  icon: HardDrive },
-  { id: 'audit',     label: 'Audit Log',     icon: ShieldCheck },
-  { id: 'logs',      label: 'Log Viewer',    icon: ScrollText },
-  { id: 'startup',   label: 'Startup Apps',  icon: Power },
-  { id: 'scheduler', label: 'Scheduler',    icon: Cpu },
-  { id: 'settings', label: 'Settings', icon: Settings },
+const navCategories = [
+  {
+    label: 'Overview',
+    items: [
+      { id: 'dashboard',   label: 'Dashboard',       icon: LayoutDashboard },
+      { id: 'home',        label: 'Home Assistant',  icon: Home },
+      { id: 'app-launcher',label: 'App Launcher',    icon: AppWindow },
+    ]
+  },
+  {
+    label: 'AI Suite',
+    items: [
+      { id: 'assistant', label: 'Quantum AI', icon: MessageSquare },
+      { id: 'image-gen', label: 'Image Gen',     icon: Sparkles },
+      { id: 'video-gen', label: 'Video Gen',     icon: Video },
+      { id: 'gallery',   label: 'AI Gallery',   icon: Library },
+      { id: 'memory',    label: 'AI Memory',    icon: Brain },
+      { id: 'ai-models', label: 'AI Models',    icon: BotMessageSquare },
+    ]
+  },
+  {
+    label: 'Performance',
+    items: [
+      { id: 'optimizer', label: 'Optimizer', icon: Rocket },
+      { id: 'scheduler', label: 'Scheduler',    icon: Cpu },
+      { id: 'updates', label: 'Updates', icon: Zap },
+      { id: 'cleaner',   label: 'Cleaner',         icon: Trash2 },
+      { id: 'snapshots', label: 'Restore Points',   icon: Camera },
+      { id: 'benchmark', label: 'Benchmark',         icon: Gauge },
+      { id: 'sandbox',   label: 'Sandbox',          icon: Shield },
+    ]
+  },
+  {
+    label: 'System',
+    items: [
+      { id: 'terminal', label: 'Terminal', icon: TerminalIcon },
+      { id: 'processes', label: 'Processes', icon: Activity },
+      { id: 'services',  label: 'Services',  icon: Server },
+      { id: 'packages', label: 'Packages', icon: Package },
+      { id: 'depgraph', label: 'Dep Graph', icon: Layers },
+      { id: 'docker',    label: 'Docker',      icon: Box },
+    ]
+  },
+  {
+    label: 'Diagnostics',
+    items: [
+      { id: 'network',   label: 'Network',   icon: Wifi },
+      { id: 'disk',      label: 'Disk Monitor',  icon: HardDrive },
+      { id: 'boot',      label: 'Boot Analyser', icon: Clock },
+      { id: 'history',   label: 'Sys History',   icon: LineChart },
+      { id: 'health',    label: 'Health Report', icon: HeartPulse },
+      { id: 'audit',     label: 'Audit Log',     icon: ShieldCheck },
+      { id: 'env',       label: 'Env Variables', icon: Variable },
+      { id: 'logs',      label: 'Log Viewer',    icon: ScrollText },
+      { id: 'startup',   label: 'Startup Apps',  icon: Power },
+    ]
+  },
+  {
+    label: 'Automation',
+    items: [
+      { id: 'automations', label: 'Workflows', icon: GitBranch },
+      { id: 'cron', label: 'Cron Jobs', icon: CalendarClock },
+      { id: 'ssh', label: 'SSH Keys', icon: KeyRound },
+      { id: 'firewall', label: 'Firewall (UFW)', icon: FlameKindling },
+      { id: 'vault', label: 'Dotfile Vault', icon: Archive },
+    ]
+  },
+  {
+    label: 'Config',
+    items: [
+      { id: 'settings', label: 'Settings', icon: Settings },
+    ]
+  }
 ]
+
+export const navItems = navCategories.flatMap(c => c.items)
 
 interface SidebarProps {
   activeTab: string
@@ -69,82 +119,93 @@ export default function Sidebar({ activeTab, setActiveTab, isExpanded, setIsExpa
         )}
       </div>
 
-      <nav className="flex-1 py-4 overflow-y-auto no-drag">
-        {navItems.map((item) => (
-          <button
-            key={item.id}
-            onClick={() => handleTabClick(item.id)}
-            onMouseEnter={() => playSound('hover')}
-            onDragOver={(e) => {
-              if (item.id === 'video-gen') {
-                e.preventDefault()
-                e.dataTransfer.dropEffect = 'copy'
-                // Auto-switch to video tab after a short hover while dragging
-                const timer = (window as any)._dragTimer
-                if (!timer && activeTab !== 'video-gen') {
-                  (window as any)._dragTimer = setTimeout(() => {
-                    setActiveTab('video-gen')
-                    playSound('hover')
-                  }, 600)
-                }
-              }
-            }}
-            onDragLeave={() => {
-              if (item.id === 'video-gen') {
-                clearTimeout((window as any)._dragTimer)
-                delete (window as any)._dragTimer
-              }
-            }}
-            onDrop={(e) => {
-              if (item.id === 'video-gen') {
-                e.preventDefault()
-                clearTimeout((window as any)._dragTimer)
-                delete (window as any)._dragTimer
-                const url = e.dataTransfer.getData('text/plain')
-                if (url && url.startsWith('http')) {
-                  window.dispatchEvent(new CustomEvent('vortex-set-i2v-source', { detail: url }))
-                  setActiveTab('video-gen')
-                  playSound('success')
-                } else if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                  const file = e.dataTransfer.files[0]
-                  if (file.type.startsWith('image/')) {
-                    const localUrl = URL.createObjectURL(file)
-                    window.dispatchEvent(new CustomEvent('vortex-set-i2v-source', { detail: localUrl }))
-                    setActiveTab('video-gen')
-                    playSound('success')
-                  }
-                }
-              }
-            }}
-            className={cn(
-              "v-nav-item",
-              activeTab === item.id && "active"
-            )}
-          >
-            <div style={{ position: 'relative', flexShrink: 0 }}>
-              <item.icon className={cn(
-                "w-4 h-4 transition-transform",
-                activeTab === item.id ? "crimson-glow text-crimson" : "text-zinc-500"
-              )} />
-              {!isExpanded && item.id === 'dashboard' && (
-                <div style={{
-                  position: 'absolute', top: '-3px', right: '-4px',
-                  width: '6px', height: '6px', borderRadius: '50%',
-                  background: cpuLoad > 85 ? 'var(--crimson)' : cpuLoad > 60 ? '#f59e0b' : 'var(--signal)',
-                  boxShadow: `0 0 5px ${cpuLoad > 85 ? 'var(--crimson)' : cpuLoad > 60 ? '#f59e0b' : 'var(--signal)'}`,
-                }} />
-              )}
-            </div>
+      <nav className="flex-1 py-4 overflow-y-auto no-drag space-y-6">
+        {navCategories.map((cat) => (
+          <div key={cat.label} className="space-y-1">
             {isExpanded && (
-              <span className="ml-4 truncate">{item.label}</span>
+              <div className="px-6 py-2 flex items-center gap-3">
+                <span className="text-[9px] font-black text-zinc-500 uppercase tracking-[0.25em] whitespace-nowrap">{cat.label}</span>
+                <div className="h-[1px] flex-1 bg-white/5" />
+              </div>
             )}
-            {activeTab === item.id && (
-              <motion.div 
-                layoutId="active-nav"
-                className="absolute left-0 w-[2px] h-5 bg-crimson rounded-r-full"
-              />
-            )}
-          </button>
+            <div className="space-y-0.5">
+              {cat.items.map((item) => (
+                <button
+                  key={item.id}
+                  onClick={() => handleTabClick(item.id)}
+                  onMouseEnter={() => playSound('hover')}
+                  onDragOver={(e) => {
+                    if (item.id === 'video-gen') {
+                      e.preventDefault()
+                      e.dataTransfer.dropEffect = 'copy'
+                      const timer = (window as any)._dragTimer
+                      if (!timer && activeTab !== 'video-gen') {
+                        (window as any)._dragTimer = setTimeout(() => {
+                          setActiveTab('video-gen')
+                          playSound('hover')
+                        }, 600)
+                      }
+                    }
+                  }}
+                  onDragLeave={() => {
+                    if (item.id === 'video-gen') {
+                      clearTimeout((window as any)._dragTimer)
+                      delete (window as any)._dragTimer
+                    }
+                  }}
+                  onDrop={(e) => {
+                    if (item.id === 'video-gen') {
+                      e.preventDefault()
+                      clearTimeout((window as any)._dragTimer)
+                      delete (window as any)._dragTimer
+                      const url = e.dataTransfer.getData('text/plain')
+                      if (url && url.startsWith('http')) {
+                        window.dispatchEvent(new CustomEvent('vortex-set-i2v-source', { detail: url }))
+                        setActiveTab('video-gen')
+                        playSound('success')
+                      } else if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                        const file = e.dataTransfer.files[0]
+                        if (file.type.startsWith('image/')) {
+                          const localUrl = URL.createObjectURL(file)
+                          window.dispatchEvent(new CustomEvent('vortex-set-i2v-source', { detail: localUrl }))
+                          setActiveTab('video-gen')
+                          playSound('success')
+                        }
+                      }
+                    }
+                  }}
+                  className={cn(
+                    "v-nav-item",
+                    activeTab === item.id && "active"
+                  )}
+                >
+                  <div style={{ position: 'relative', flexShrink: 0 }}>
+                    <item.icon className={cn(
+                      "w-3.5 h-3.5 transition-transform",
+                      activeTab === item.id ? "crimson-glow text-crimson" : "text-zinc-500"
+                    )} />
+                    {!isExpanded && item.id === 'dashboard' && (
+                      <div style={{
+                        position: 'absolute', top: '-3px', right: '-4px',
+                        width: '6px', height: '6px', borderRadius: '50%',
+                        background: cpuLoad > 85 ? 'var(--crimson)' : cpuLoad > 60 ? '#f59e0b' : 'var(--signal)',
+                        boxShadow: `0 0 5px ${cpuLoad > 85 ? 'var(--crimson)' : cpuLoad > 60 ? '#f59e0b' : 'var(--signal)'}`,
+                      }} />
+                    )}
+                  </div>
+                  {isExpanded && (
+                    <span className="ml-4 truncate text-[11px] font-medium normal-case tracking-normal">{item.label}</span>
+                  )}
+                  {activeTab === item.id && (
+                    <motion.div 
+                      layoutId="active-nav"
+                      className="absolute left-0 w-[2px] h-4 bg-crimson rounded-r-full"
+                    />
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
         ))}
       </nav>
 

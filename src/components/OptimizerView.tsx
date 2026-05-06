@@ -1,16 +1,40 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { HardDrive, Shield, Loader2, Zap } from 'lucide-react'
+import { HardDrive, Shield, Loader2, Zap, RefreshCw, Cpu, Box } from 'lucide-react'
 import { cn } from '../lib/utils'
+import { notify } from '../lib/notifications'
 
 export default function OptimizerView() {
   const [isOptimizing, setIsOptimizing] = useState<string | null>(null)
   const [results, setResults] = useState<Record<string, any>>({})
+  const [genericPkgs, setGenericPkgs] = useState<{ name: string; repo: string }[]>([])
+  const [isAuditing, setIsAuditing] = useState(false)
+  const [rebuildTarget, setRebuildLog] = useState<string | null>(null)
+
+  const runAudit = async () => {
+    setIsAuditing(true)
+    const res = await window.electron.systemAuditArch()
+    setIsAuditing(false)
+    if (res.success) {
+      setGenericPkgs(res.packages)
+      if (res.packages.length === 0) notify('Audit', 'Your system is fully optimized for x86-64-v4!', 'success')
+    }
+  }
+
+  const runRebuild = async (pkg: string) => {
+    setRebuildLog(pkg)
+    const res = await window.electron.systemRebuildNative(pkg)
+    setRebuildLog(null)
+    if (res.success) {
+      notify('Optimizer', `${pkg} successfully rebuilt for Zen 4`, 'success')
+      setGenericPkgs(prev => prev.filter(p => p.name !== pkg))
+    }
+  }
 
   const runOptimize = async (id: string) => {
     setIsOptimizing(id)
     try {
-      const res = await (window as any).electron.systemOptimize(id as any)
+      const res = await window.electron.systemOptimize(id as any)
       setResults(prev => ({ ...prev, [id]: res }))
     } catch (e: any) {
       setResults(prev => ({ ...prev, [id]: { success: false, error: e.message } }))
@@ -20,7 +44,62 @@ export default function OptimizerView() {
   }
 
   return (
-    <div className="max-w-4xl mx-auto">
+    <div className="max-w-4xl mx-auto flex flex-col gap-6">
+      
+      {/* 2026 Zen 4 Auditor */}
+      <div className="glass rounded-3xl border border-cyan-500/10 overflow-hidden bg-gradient-to-br from-cyan-500/5 to-transparent">
+        <div className="p-6 flex items-center justify-between">
+          <div className="flex items-center space-x-6">
+            <div className="p-4 rounded-2xl bg-cyan-500/10 border border-cyan-500/20 text-cyan-400">
+              <Cpu className="w-6 h-6" />
+            </div>
+            <div>
+              <h3 className="font-bold text-lg uppercase italic text-white">x86-64-v4 Architecture Auditor</h3>
+              <p className="text-zinc-500 text-xs">Identify generic binaries and rebuild them natively for your Zen 4 CPU.</p>
+            </div>
+          </div>
+          <button 
+            onClick={runAudit}
+            disabled={isAuditing}
+            className="px-6 py-3 rounded-xl font-bold uppercase tracking-widest text-[10px] bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/20 transition-all"
+          >
+            {isAuditing ? <Loader2 className="w-4 h-4 animate-spin" /> : "Run Silicon Audit"}
+          </button>
+        </div>
+
+        <AnimatePresence>
+          {genericPkgs.length > 0 && (
+            <motion.div initial={{ height: 0 }} animate={{ height: 'auto' }} className="px-6 pb-6">
+              <div className="bg-black/40 rounded-2xl border border-white/5 p-4 flex flex-col gap-2">
+                <div className="text-[9px] font-bold text-zinc-600 uppercase tracking-widest mb-2 px-2 flex justify-between">
+                  <span>Detected Generic Packages</span>
+                  <span>Zen 4 Performance Potential: ~8%</span>
+                </div>
+                {genericPkgs.map(pkg => (
+                  <div key={pkg.name} className="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5 hover:border-white/10 transition-all">
+                    <div className="flex items-center gap-3">
+                      <Box size={14} className="text-zinc-500" />
+                      <div>
+                        <div className="text-xs font-bold text-zinc-300">{pkg.name}</div>
+                        <div className="text-[8px] font-mono text-zinc-600">Source: {pkg.repo} (Generic x86_64)</div>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => runRebuild(pkg.name)}
+                      disabled={!!rebuildTarget}
+                      className="px-3 py-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 text-[9px] font-bold uppercase border border-emerald-500/20 transition-all flex items-center gap-2"
+                    >
+                      {rebuildTarget === pkg.name ? <Loader2 size={10} className="animate-spin" /> : <RefreshCw size={10} />}
+                      {rebuildTarget === pkg.name ? "Rebuilding..." : "Nativize"}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
       <div className="grid grid-cols-1 gap-6 mb-8">
         <OptCard 
           id="ssd"
