@@ -259,7 +259,19 @@ app.on('web-contents-created', (_, contents) => {
   })
 })
 
+async function ensureOllamaRunning() {
+  try {
+    const resp = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(1500) })
+    if (resp.ok) return // already up
+  } catch { /* not running — start it */ }
+  exec('sudo systemctl start ollama', (err) => {
+    if (err) console.log('[Vortex] Ollama auto-start failed (may need passwordless sudo for systemctl start ollama):', err.message)
+    else console.log('[Vortex] Ollama started automatically')
+  })
+}
+
 app.whenReady().then(() => {
+  ensureOllamaRunning()
   startComfyUI()
   createWindow()
   createTray()
