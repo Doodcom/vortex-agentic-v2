@@ -14,7 +14,9 @@ contextBridge.exposeInMainWorld('electron', {
   ollamaDeleteModel: (payload: { name: string }) => ipcRenderer.invoke('ollama-delete-model', payload),
   ollamaCancel: () => ipcRenderer.invoke('ollama-cancel'),
   ollamaPurge: () => ipcRenderer.invoke('ollama-purge'),
-  
+  ollamaServiceStart: () => ipcRenderer.invoke('ollama-service-start'),
+  ollamaServiceStop: () => ipcRenderer.invoke('ollama-service-stop'),
+
   // System
   systemCheckUpdates: () => ipcRenderer.invoke('system-check-updates'),
   systemUpgrade: () => ipcRenderer.invoke('system-upgrade'),

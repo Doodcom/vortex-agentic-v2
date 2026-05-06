@@ -259,19 +259,37 @@ app.on('web-contents-created', (_, contents) => {
   })
 })
 
-async function ensureOllamaRunning() {
+// Called when user enters an AI tab — starts service if not already running
+ipcMain.handle('ollama-service-start', async () => {
   try {
     const resp = await fetch('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(1500) })
-    if (resp.ok) return // already up
-  } catch { /* not running — start it */ }
-  exec('sudo systemctl start ollama', (err) => {
-    if (err) console.log('[Vortex] Ollama auto-start failed (may need passwordless sudo for systemctl start ollama):', err.message)
-    else console.log('[Vortex] Ollama started automatically')
+    if (resp.ok) return { ok: true, already: true }
+  } catch { /* not running */ }
+  return new Promise((resolve) => {
+    exec('sudo systemctl start ollama', (err) => {
+      if (err) {
+        console.log('[Vortex] Ollama service start failed:', err.message)
+        resolve({ ok: false, error: err.message })
+      } else {
+        console.log('[Vortex] Ollama service started')
+        resolve({ ok: true, already: false })
+      }
+    })
   })
-}
+})
+
+// Called when user leaves all AI tabs — stops service to fully free VRAM
+ipcMain.handle('ollama-service-stop', async () => {
+  return new Promise((resolve) => {
+    exec('sudo systemctl stop ollama', (err) => {
+      if (err) console.log('[Vortex] Ollama service stop failed:', err.message)
+      else console.log('[Vortex] Ollama service stopped')
+      resolve({ ok: !err })
+    })
+  })
+})
 
 app.whenReady().then(() => {
-  ensureOllamaRunning()
   startComfyUI()
   createWindow()
   createTray()

@@ -252,43 +252,47 @@ export default function App() {
   }, [])
 
   const handleSetActiveTab = useCallback(async (id: string) => {
-    const isAssistant = activeTab === 'assistant';
-    const isComfy = activeTab === 'image-gen' || activeTab === 'video-gen';
-    const targetAssistant = id === 'assistant';
-    const targetComfy = id === 'image-gen' || id === 'video-gen';
+    const AI_TABS = new Set(['assistant', 'image-gen', 'video-gen'])
+    const isAI = AI_TABS.has(activeTab)
+    const targetAI = AI_TABS.has(id)
+    const isAssistant = activeTab === 'assistant'
+    const isComfy = activeTab === 'image-gen' || activeTab === 'video-gen'
+    const targetAssistant = id === 'assistant'
+    const targetComfy = id === 'image-gen' || id === 'video-gen'
+    const el = (window as any).electron
 
-    // 1. Moving AWAY from Assistant to anything else
-    if (isAssistant && !targetAssistant) {
-      if ((window as any).electron?.ollamaPurge) {
-        console.log('[Vortex] Purging LLM VRAM on exit');
-        await (window as any).electron.ollamaPurge();
-      }
-    }
-    
-    // 2. Moving AWAY from Comfy (Image/Video) to anything else
-    if (isComfy && !targetComfy) {
-      if ((window as any).electron?.comfyPurge) {
-        console.log('[Vortex] Purging ComfyUI VRAM on exit');
-        await (window as any).electron.comfyPurge();
-      }
+    // Entering an AI tab from a non-AI tab — boot Ollama service
+    if (!isAI && targetAI) {
+      console.log('[Vortex] Entering AI tab — starting Ollama service')
+      el?.ollamaServiceStart?.()
     }
 
-    // 3. Moving TO Comfy from Assistant (Cross-Engine swap)
+    // Leaving all AI tabs to a system tab — stop service to fully free VRAM
+    if (isAI && !targetAI) {
+      if (isAssistant) {
+        console.log('[Vortex] Leaving AI — purging LLM then stopping Ollama service')
+        await el?.ollamaPurge?.()
+      }
+      if (isComfy) {
+        console.log('[Vortex] Leaving AI — purging ComfyUI VRAM')
+        await el?.comfyPurge?.()
+      }
+      console.log('[Vortex] Stopping Ollama service')
+      el?.ollamaServiceStop?.()
+    }
+
+    // Cross-engine swap: Assistant → Image/Video
     if (isAssistant && targetComfy) {
-       if ((window as any).electron?.ollamaPurge) {
-        console.log('[Vortex] Swapping LLM -> Comfy: Purging LLM');
-        await (window as any).electron.ollamaPurge();
-      }
+      console.log('[Vortex] Swapping LLM -> Comfy: purging LLM')
+      await el?.ollamaPurge?.()
     }
 
-    // 4. Moving TO Assistant from Comfy (Cross-Engine swap)
+    // Cross-engine swap: Image/Video → Assistant
     if (isComfy && targetAssistant) {
-      if ((window as any).electron?.comfyPurge) {
-        console.log('[Vortex] Swapping Comfy -> LLM: Purging Comfy');
-        await (window as any).electron.comfyPurge();
-      }
+      console.log('[Vortex] Swapping Comfy -> LLM: purging Comfy')
+      await el?.comfyPurge?.()
     }
-    
+
     setActiveTab(id)
   }, [activeTab])
 

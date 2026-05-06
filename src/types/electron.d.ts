@@ -32,6 +32,8 @@ export interface ElectronAPI {
   ollamaDeleteModel: (payload: { name: string }) => Promise<{ success: boolean; error?: string }>
   ollamaCancel: () => Promise<{ success: boolean }>
   ollamaPurge: () => Promise<{ success: boolean }>
+  ollamaServiceStart: () => Promise<{ ok: boolean; already?: boolean; error?: string }>
+  ollamaServiceStop: () => Promise<{ ok: boolean }>
 
   // System
   systemCheckUpdates: () => Promise<{ repo: string[]; aur: string[] }>
