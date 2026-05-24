@@ -629,14 +629,19 @@ export function createI2VWorkflow(
   fps = 12,
   useTiledVae = false,
   useRife = false,
-  rifeMultiplier = 5
+  rifeMultiplier = 5,
+  width = 768,
+  height = 768,
 ) {
   const workflow: any = {
     "3": { "inputs": { "ckpt_name": modelName }, "class_type": "CheckpointLoaderSimple" },
     "4": { "inputs": { "text": prompt, "clip": ["3", 1] }, "class_type": "CLIPTextEncode" },
     "5": { "inputs": { "text": negativePrompt, "clip": ["3", 1] }, "class_type": "CLIPTextEncode" },
     "6": { "inputs": { "image": imageFilename }, "class_type": "LoadImage" },
-    "7": { "inputs": { "pixels": ["6", 0], "vae": ["3", 2] }, "class_type": "VAEEncode" },
+    // Resize source image to target resolution before encoding — phone photos at 4K+
+    // would otherwise create massive latents (OOM on 48+ frames).
+    "14": { "inputs": { "image": ["6", 0], "width": width, "height": height, "upscale_method": "lanczos", "crop": "center" }, "class_type": "ImageScale" },
+    "7": { "inputs": { "pixels": ["14", 0], "vae": ["3", 2] }, "class_type": "VAEEncode" },
     "8": { "inputs": { "amount": Math.min(frames, 64), "samples": ["7", 0] }, "class_type": "RepeatLatentBatch" },
     "9": {
       "inputs": {
@@ -647,8 +652,8 @@ export function createI2VWorkflow(
     },
     "10": {
       "inputs": {
-        "seed": Math.floor(Math.random() * 1000000000), "steps": 25, "cfg": 7,
-        "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 0.85,
+        "seed": Math.floor(Math.random() * 1000000000), "steps": 25, "cfg": 8.5,
+        "sampler_name": "dpmpp_2m_sde_gpu", "scheduler": "karras", "denoise": 0.75,
         "model": ["9", 0], "positive": ["4", 0], "negative": ["5", 0], "latent_image": ["8", 0]
       },
       "class_type": "KSampler"
@@ -840,6 +845,117 @@ export function createWanWorkflow(
 
   workflow["7"] = {
     "inputs": { "images": finalFrames, "filename_prefix": "VortexWAN", "frame_rate": finalFps, "loop_count": 0, "format": "video/h264-mp4", "pingpong": false, "save_output": true },
+    "class_type": "VHS_VideoCombine"
+  }
+
+  return workflow
+}
+
+// WAN 2.1 I2V via kijai's ComfyUI-WanVideoWrapper.
+// Uses the native WAN I2V architecture: CLIP vision encodes the source image,
+// WanVideoImageToVideoEncode anchors frame 0, sampler generates the remaining frames.
+export function createWanI2VWorkflow(
+  prompt: string,
+  negativePrompt: string,
+  imageFilename: string,
+  width = 832,
+  height = 480,
+  numFrames = 33,
+  fps = 16,
+  steps = 30,
+  cfg = 6,
+  shift = 8,
+  diffusionModel = 'Wan2_1-I2V-14B-480p_fp8_e4m3fn_scaled_KJ.safetensors',
+  t5Model = 'umt5-xxl-enc-fp8_e4m3fn.safetensors',
+  vaeModel = 'Wan2_1_VAE_bf16.safetensors',
+  clipVisionModel = 'open-clip-xlm-roberta-large-vit-huge-14_visual_fp16.safetensors',
+  useRife = false,
+  rifeMultiplier = 2,
+) {
+  const seed = Math.floor(Math.random() * 1_000_000_000)
+  const workflow: any = {
+    "BS": {
+      "inputs": {
+        "blocks_to_swap": 38, "offload_img_emb": true, "offload_txt_emb": true,
+        "vace_blocks_to_swap": 0, "prefetch_blocks": 0, "use_non_blocking": true,
+      },
+      "class_type": "WanVideoBlockSwap"
+    },
+    "1": {
+      "inputs": {
+        "model": diffusionModel, "base_precision": "bf16", "quantization": "fp8_e4m3fn",
+        "load_device": "offload_device", "attention_mode": "sdpa",
+        "block_swap_args": ["BS", 0],
+      },
+      "class_type": "WanVideoModelLoader"
+    },
+    "2": {
+      "inputs": { "model_name": t5Model, "precision": "bf16", "load_device": "offload_device", "quantization": "fp8_e4m3fn" },
+      "class_type": "LoadWanVideoT5TextEncoder"
+    },
+    "3": {
+      "inputs": { "model_name": vaeModel, "precision": "bf16" },
+      "class_type": "WanVideoVAELoader"
+    },
+    "CV": {
+      "inputs": { "model_name": clipVisionModel, "precision": "fp16", "load_device": "offload_device" },
+      "class_type": "LoadWanVideoClipTextEncoder"
+    },
+    "LI": {
+      "inputs": { "image": imageFilename },
+      "class_type": "LoadImage"
+    },
+    "CL": {
+      "inputs": {
+        "clip_vision": ["CV", 0], "image_1": ["LI", 0],
+        "strength_1": 1.0, "strength_2": 1.0, "crop": "center",
+        "combine_embeds": "average", "force_offload": true,
+      },
+      "class_type": "WanVideoClipVisionEncode"
+    },
+    "4": {
+      "inputs": { "positive_prompt": prompt, "negative_prompt": negativePrompt, "t5": ["2", 0], "force_offload": true },
+      "class_type": "WanVideoTextEncode"
+    },
+    "IE": {
+      "inputs": {
+        "width": width, "height": height, "num_frames": numFrames,
+        "noise_aug_strength": 0.0, "start_latent_strength": 1.0, "end_latent_strength": 1.0,
+        "force_offload": true, "vae": ["3", 0], "clip_embeds": ["CL", 0], "start_image": ["LI", 0],
+      },
+      "class_type": "WanVideoImageToVideoEncode"
+    },
+    "5": {
+      "inputs": {
+        "model": ["1", 0],
+        "image_embeds": ["IE", 0],
+        "text_embeds": ["4", 0],
+        "steps": steps, "cfg": cfg, "shift": shift, "seed": seed,
+        "scheduler": "unipc", "riflex_freq_index": 0,
+        "force_offload": true, "denoise_strength": 1.0,
+      },
+      "class_type": "WanVideoSampler"
+    },
+    "6": {
+      "inputs": { "vae": ["3", 0], "samples": ["5", 0], "enable_vae_tiling": true, "tile_x": 272, "tile_y": 272, "tile_stride_x": 144, "tile_stride_y": 128 },
+      "class_type": "WanVideoDecode"
+    },
+  }
+
+  let finalFrames: [string, number] = ["6", 0]
+  let finalFps = fps
+
+  if (useRife) {
+    workflow["8"] = {
+      "inputs": { "ckpt_name": "rife47.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "frames": ["6", 0] },
+      "class_type": "RIFE VFI"
+    }
+    finalFrames = ["8", 0]
+    finalFps = fps * rifeMultiplier
+  }
+
+  workflow["7"] = {
+    "inputs": { "images": finalFrames, "filename_prefix": "VortexWANI2V", "frame_rate": finalFps, "loop_count": 0, "format": "video/h264-mp4", "pingpong": false, "save_output": true },
     "class_type": "VHS_VideoCombine"
   }
 

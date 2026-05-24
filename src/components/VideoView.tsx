@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Video, Box, Wand2, Film, Loader2, Download, Clapperboard } from 'lucide-react'
 import { useComfySocket } from '../hooks/useComfySocket'
-import { getModels, createI2VWorkflow, createV2VWorkflow, createWanWorkflow, queuePrompt, getModelInfo, uploadImage, uploadVideo } from '../lib/comfyApi'
+import { getModels, createV2VWorkflow, createWanWorkflow, createWanI2VWorkflow, queuePrompt, getModelInfo, uploadImage, uploadVideo } from '../lib/comfyApi'
 import { notify } from '../lib/notifications'
 
 interface VideoViewProps {
@@ -15,6 +15,7 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
   const [models, setModels] = useState<string[]>([])
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('vortex-vid-model') || '')
   const [mode, setMode] = useState<'i2v' | 'v2v' | 'wan'>('wan')
+  const [localI2vSource, setLocalI2vSource] = useState<string | null>(null)
   const [v2vSource, setV2vSource] = useState<string | null>(null)
   const [v2vDenoise, setV2vDenoise] = useState(() => Number(localStorage.getItem('vortex-vid-v2v-denoise')) || 0.5)
   const [duration, setDuration] = useState(() => Number(localStorage.getItem('vortex-vid-duration')) || 4)
@@ -46,32 +47,36 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
   const [useRife, setUseRife] = useState(false)
   const [rifeMultiplier, setRifeMultiplier] = useState(() => Number(localStorage.getItem('vortex-vid-rife-mult')) || 5)
   
-  // Dynamic Limits for 16GB VRAM + 64GB RAM
-  const maxSeconds = ultraQuality ? 12 : 4;
+  // WAN is capped at 81 frames (5s at 16fps) by the model architecture.
+  // AnimateDiff uses ultraQuality to unlock RAM-backed longer clips.
+  const maxSeconds = (mode === 'wan' || mode === 'i2v') ? 5 : ultraQuality ? 12 : 4;
 
   useEffect(() => {
     if (duration > maxSeconds) {
       setDuration(maxSeconds);
     }
-  }, [ultraQuality, maxSeconds])
+  }, [ultraQuality, maxSeconds, mode])
 
   const [isGenerating, setIsGenerating] = useState(false)
   const [generatedVideo, setGeneratedVideo] = useState<string | null>(null)
   const [vramStats, setVramStats] = useState<{ used: number; total: number; gpuUtil: number } | null>(null)
 
-  const { status, progress, lastVideo, generationError, clientId } = useComfySocket()
+  const { status, progress, lastVideo, generationError, resetError, clientId } = useComfySocket()
 
   useEffect(() => {
     if (i2vSource) {
+      setLocalI2vSource(i2vSource)
       setMode('i2v')
     }
   }, [i2vSource])
 
   useEffect(() => {
     getModels().then(m => {
-      // Filter for SDXL models if possible, or just list all
-      setModels(m)
-      if (m.length > 0) setSelectedModel(m[0])
+      // AnimateDiff only works with SDXL checkpoints — exclude FLUX/UNet models
+      const sdxl = m.filter(n => !n.startsWith('unet::') && !n.toLowerCase().includes('flux') && !n.toLowerCase().includes('fill'))
+      const list = sdxl.length > 0 ? sdxl : m
+      setModels(list)
+      if (list.length > 0) setSelectedModel(list[0])
     }).catch(() => {
       notify('Engine', 'Failed to fetch ComfyUI models', 'error')
     })
@@ -109,18 +114,19 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
   }, [lastVideo])
 
   const handleGenerate = async () => {
-    if (!prompt || isGenerating || (mode !== 'wan' && !selectedModel)) return
+    if (!prompt || isGenerating || (mode === 'v2v' && !selectedModel)) return
     if (mode === 'v2v' && !v2vSource) { notify('V2V', 'Drop a source video first', 'error'); return }
+    resetError()
     setIsGenerating(true)
 
-    // Free Ollama VRAM so ComfyUI/WAN has the full 16GB GPU. WAN 14B FP8 + block swap
-    // still needs every megabyte it can get.
+    const withTimeout = (p: Promise<any>, ms: number) =>
+      Promise.race([p, new Promise(r => setTimeout(r, ms))])
+
     if ((window as any).electron?.ollamaPurge) {
-      await (window as any).electron.ollamaPurge()
+      await withTimeout((window as any).electron.ollamaPurge(), 5000)
     }
-    // Also drop any cached SDXL/animatediff models from a previous run.
-    if (mode === 'wan' && (window as any).electron?.comfyPurge) {
-      await (window as any).electron.comfyPurge()
+    if ((window as any).electron?.comfyPurge) {
+      await withTimeout((window as any).electron.comfyPurge(), 8000)
     }
 
     try {
@@ -129,17 +135,15 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
 
       let workflow;
       if (mode === 'wan') {
-        // WAN 2.1 native sampler — uses its own model loaders, ignores selectedModel.
-        // WAN 14B was trained at 832x480; ignore the UI resolution which is sized for SDXL.
         const wanFps = 16
         const wanFrames = Math.min(81, Math.max(17, duration * wanFps))
         workflow = createWanWorkflow(prompt, negativePrompt, 832, 480, wanFrames, wanFps, 30, 6, 8, undefined, undefined, undefined, useRife, rifeMultiplier)
-      } else if (mode === 'i2v' && i2vSource) {
-        notify('Motion Engine', 'Uploading source image...', 'info')
-        const filename = await uploadImage(i2vSource)
-        workflow = createI2VWorkflow(prompt, negativePrompt, selectedModel, filename, frames, fps, ultraQuality, useRife, rifeMultiplier)
+      } else if (mode === 'i2v' && localI2vSource) {
+        const filename = await uploadImage(localI2vSource)
+        const wanFps = 16
+        const wanFrames = Math.min(33, Math.max(17, duration * wanFps))
+        workflow = createWanI2VWorkflow(prompt, negativePrompt, filename, 832, 480, wanFrames, wanFps, 30, 6, 8, undefined, undefined, undefined, undefined, useRife, rifeMultiplier)
       } else if (mode === 'v2v' && v2vSource) {
-        notify('Motion Engine', 'Uploading source video...', 'info')
         const filename = await uploadVideo(v2vSource)
         workflow = createV2VWorkflow(prompt, negativePrompt, selectedModel, filename, v2vDenoise, fps, frames, ultraQuality, useRife, rifeMultiplier)
       } else {
@@ -151,7 +155,7 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
       await queuePrompt(workflow, clientId)
     } catch (err: any) {
       console.error(err)
-      notify('Generation Failed', err.message, 'error')
+      notify('Generation Failed', err.message ?? String(err), 'error')
       setIsGenerating(false)
     }
   }
@@ -179,14 +183,16 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
   return (
     <div style={{ display: 'flex', height: 'calc(100vh - 180px)', gap: '24px' }}>
       {/* Sidebar Controls */}
-      <div className="v-card" style={{ width: '320px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px', overflowY: 'auto' }}>
+      <div className="v-card v-card-scroll" style={{ width: '320px', padding: '24px', display: 'flex', flexDirection: 'column', gap: '20px' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
           <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: 'rgba(168,85,247,0.1)', border: '1px solid rgba(168,85,247,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#a855f7' }}>
             <Video size={20} />
           </div>
           <div>
             <h2 style={{ fontSize: '14px', fontWeight: 'bold', color: 'white', margin: 0, textTransform: 'uppercase', letterSpacing: '0.05em' }}>Motion Engine</h2>
-            <div style={{ fontSize: '9px', color: '#a855f7', opacity: 0.6, textTransform: 'uppercase', letterSpacing: '0.15em' }}>AnimateDiff V2</div>
+            <div style={{ fontSize: '9px', color: '#a855f7', opacity: 0.6, textTransform: 'uppercase', letterSpacing: '0.15em' }}>
+              {mode === 'wan' ? 'WAN 2.1 · T2V' : mode === 'i2v' ? 'WAN 2.1 · I2V' : 'AnimateDiff V2'}
+            </div>
           </div>
         </div>
 
@@ -226,15 +232,25 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
                 }
                 if (url) setV2vSource(url);
               }}
+              onClick={() => {
+                const input = document.createElement('input');
+                input.type = 'file';
+                input.accept = 'video/*';
+                input.onchange = (e) => {
+                  const file = (e.target as HTMLInputElement).files?.[0];
+                  if (file) setV2vSource(URL.createObjectURL(file));
+                };
+                input.click();
+              }}
               style={{ padding: '12px', background: 'rgba(168,85,247,0.05)', border: '1px solid rgba(168,85,247,0.2)', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '8px', cursor: 'pointer' }}
             >
-              <label style={{ fontSize: '10px', textTransform: 'uppercase' as const, letterSpacing: '0.15em', color: '#52525b', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px' }}>Source Video</label>
+              <label style={{ fontSize: '10px', textTransform: 'uppercase' as const, letterSpacing: '0.15em', color: '#52525b', fontWeight: 'bold', display: 'flex', alignItems: 'center', gap: '8px', pointerEvents: 'none' }}>Source Video</label>
               {v2vSource ? (
                 <video src={v2vSource} style={{ width: '100%', height: '100px', objectFit: 'cover', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)' }} muted />
               ) : (
                 <div style={{ height: '80px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#52525b', gap: '8px', border: '1px dashed rgba(255,255,255,0.1)', borderRadius: '4px' }}>
                   <Clapperboard size={20} opacity={0.2} />
-                  <span style={{ fontSize: '9px', fontFamily: 'monospace' }}>DROP VIDEO HERE</span>
+                  <span style={{ fontSize: '9px', fontFamily: 'monospace' }}>CLICK OR DROP VIDEO</span>
                 </div>
               )}
             </div>
@@ -257,38 +273,60 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
         )}
 
         {mode === 'i2v' && (
-          <div 
+          <div
             onDragOver={e => { e.preventDefault(); e.dataTransfer.dropEffect = 'copy' }}
             onDrop={async e => {
               e.preventDefault();
               let url = e.dataTransfer.getData('text/plain') || e.dataTransfer.getData('text/uri-list');
-              
               if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
                 const file = e.dataTransfer.files[0];
-                if (file.type.startsWith('image/')) {
-                  url = URL.createObjectURL(file);
+                if (file.type.startsWith('image/')) url = URL.createObjectURL(file);
+              }
+              if (url) { setLocalI2vSource(url); window.dispatchEvent(new CustomEvent('vortex-set-i2v-source', { detail: url })); }
+            }}
+            onClick={() => {
+              const input = document.createElement('input');
+              input.type = 'file';
+              input.accept = 'image/*,.heic,.heif,.avif,.tiff,.tif';
+              input.onchange = async (e) => {
+                const file = (e.target as HTMLInputElement).files?.[0];
+                if (!file) return;
+                const ext = (file.name.split('.').pop() ?? '').toLowerCase();
+                const browserOk = ['png', 'jpg', 'jpeg', 'webp', 'gif'].includes(ext);
+                if (browserOk) {
+                  const url = URL.createObjectURL(file);
+                  setLocalI2vSource(url);
+                  window.dispatchEvent(new CustomEvent('vortex-set-i2v-source', { detail: url }));
+                  return;
                 }
-              }
-
-              if (url) {
-                window.dispatchEvent(new CustomEvent('vortex-set-i2v-source', { detail: url }));
-              }
+                notify('Converting', `${ext.toUpperCase()} → JPEG…`, 'info');
+                const base64: string = await new Promise((resolve, reject) => {
+                  const r = new FileReader();
+                  r.onload = () => { const s = r.result as string; resolve(s.slice(s.indexOf(',') + 1)); };
+                  r.onerror = () => reject(new Error('Read failed'));
+                  r.readAsDataURL(file);
+                });
+                const res = await (window as any).electron?.systemConvertHeic?.({ base64, ext });
+                if (res?.success) { setLocalI2vSource(res.dataUrl); window.dispatchEvent(new CustomEvent('vortex-set-i2v-source', { detail: res.dataUrl })); }
+                else notify('Conversion failed', res?.error || `Couldn't convert ${ext}`, 'error');
+              };
+              input.click();
             }}
             style={{ padding: '12px', background: 'rgba(168,85,247,0.05)', border: '1px solid rgba(168,85,247,0.2)', borderRadius: '8px', display: 'flex', flexDirection: 'column', gap: '8px', cursor: 'pointer' }}
           >
-            <label style={labelStyle}>Source Image</label>
-            {i2vSource ? (
-              <img src={i2vSource} style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)' }} />
+            <label style={{ ...labelStyle, pointerEvents: 'none' }}>Source Image</label>
+            {localI2vSource ? (
+              <img src={localI2vSource} style={{ width: '100%', height: '120px', objectFit: 'cover', borderRadius: '4px', border: '1px solid rgba(255,255,255,0.1)' }} />
             ) : (
               <div style={{ height: '120px', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', color: '#52525b', gap: '8px', border: '1px dashed rgba(255,255,255,0.1)', borderRadius: '4px' }}>
                 <Film size={24} opacity={0.2} />
-                <span style={{ fontSize: '9px', fontFamily: 'monospace' }}>DROP IMAGE HERE</span>
+                <span style={{ fontSize: '9px', fontFamily: 'monospace' }}>CLICK OR DROP IMAGE</span>
               </div>
             )}
           </div>
         )}
 
-        {mode !== 'wan' && (
+        {mode === 'v2v' && (
           <div>
             <label style={labelStyle}><Box size={12} /> Neural Model</label>
             <select
@@ -316,7 +354,14 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
           </div>
         )}
 
-        {mode !== 'wan' && (
+        {mode === 'i2v' && (
+          <div style={{ padding: '10px', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: '8px', fontSize: '10px', color: '#fcd34d', fontFamily: 'monospace', lineHeight: 1.5 }}>
+            <div style={{ fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '4px' }}>WAN 2.1 I2V — 14B FP8</div>
+            832 × 480 · 16 fps · image-anchored · ~8-12 min per clip
+          </div>
+        )}
+
+        {mode === 'v2v' && (
           <div>
             <label style={labelStyle}>Resolution</label>
             <div style={{ display: 'flex', gap: '8px' }}>
@@ -334,11 +379,32 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
         )}
 
         <div>
+          <label style={labelStyle}>Positive Prompt</label>
+          <textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="A cyberpunk street at night, neon lights, high detail..."
+            style={{ width: '100%', height: '100px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px', color: 'white', fontSize: '13px', resize: 'none', outline: 'none' }}
+          />
+        </div>
+
+        <div>
+          <label style={labelStyle}>Negative Prompt</label>
+          <textarea
+            value={negativePrompt}
+            onChange={(e) => setNegativePrompt(e.target.value)}
+            style={{ width: '100%', height: '60px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px', color: '#71717a', fontSize: '12px', resize: 'none', outline: 'none' }}
+          />
+        </div>
+
+        <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
             <label style={labelStyle}>Video Length</label>
-            <span style={{ fontSize: '10px', color: ultraQuality ? '#a855f7' : '#52525b', fontFamily: 'monospace', fontWeight: 'bold' }}>
-              {ultraQuality ? 'EXTENDED MODE' : 'VRAM SAFE MODE'}
-            </span>
+            {mode === 'v2v' && (
+              <span style={{ fontSize: '10px', color: ultraQuality ? '#a855f7' : '#52525b', fontFamily: 'monospace', fontWeight: 'bold' }}>
+                {ultraQuality ? 'EXTENDED MODE' : 'VRAM SAFE MODE'}
+              </span>
+            )}
           </div>
           <input 
             type="range" min="1" max={maxSeconds} step="1" value={duration}
@@ -351,13 +417,13 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
             <span style={{ fontSize: '10px', color: '#52525b', fontFamily: 'monospace' }}>{maxSeconds}s</span>
           </div>
           <div style={{ fontSize: '8px', color: '#3f3f46', textAlign: 'center', marginTop: '4px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-            {ultraQuality ? 'Using System RAM for long render' : 'Strictly GPU Render (Fastest)'}
+            {mode === 'v2v' ? (ultraQuality ? 'Using System RAM for long render' : 'Strictly GPU Render (Fastest)') : 'WAN 2.1 · CPU block-swap · slower but accurate'}
           </div>
         </div>
 
 
         <div style={{ display: 'flex', gap: '8px', flexDirection: 'column' }}>
-          {mode !== 'wan' && (
+          {mode === 'v2v' && (
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(168,85,247,0.05)', padding: '10px', borderRadius: '10px', border: '1px solid rgba(168,85,247,0.1)' }}>
               <div style={{ display: 'flex', flexDirection: 'column' }}>
                 <span style={{ fontSize: '10px', color: '#f4f4f5', fontWeight: 'bold', fontFamily: 'monospace' }}>ULTRA QUALITY</span>
@@ -406,28 +472,9 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
           </div>
         </div>
 
-        <div>
-          <label style={labelStyle}>Positive Prompt</label>
-          <textarea 
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            placeholder="A cyberpunk street at night, neon lights, high detail..."
-            style={{ width: '100%', height: '100px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px', color: 'white', fontSize: '13px', resize: 'none', outline: 'none' }}
-          />
-        </div>
-
-        <div>
-          <label style={labelStyle}>Negative Prompt</label>
-          <textarea 
-            value={negativePrompt}
-            onChange={(e) => setNegativePrompt(e.target.value)}
-            style={{ width: '100%', height: '60px', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '12px', color: '#71717a', fontSize: '12px', resize: 'none', outline: 'none' }}
-          />
-        </div>
-
         <button 
           onClick={handleGenerate}
-          disabled={isGenerating || !prompt || (mode !== 'wan' && !selectedModel)}
+          disabled={isGenerating || !prompt || (mode === 'v2v' && !selectedModel)}
           style={{ 
             width: '100%', padding: '14px', borderRadius: '8px', background: isGenerating ? 'rgba(255,255,255,0.05)' : '#9333ea', 
             color: isGenerating ? '#3f3f46' : 'white', border: 'none', fontWeight: 'bold', textTransform: 'uppercase', 

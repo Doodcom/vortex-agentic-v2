@@ -115,5 +115,5 @@ export function useComfySocket() {
     };
   }, []);
 
-  return { status, progress, lastImage, lastVideo, generationError, clientId: clientIdRef.current };
+  return { status, progress, lastImage, lastVideo, generationError, resetError: () => setGenerationError(null), clientId: clientIdRef.current };
 }

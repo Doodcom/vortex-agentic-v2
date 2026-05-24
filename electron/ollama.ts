@@ -436,7 +436,7 @@ function applyExtras(base: string, customPrompt?: string): string {
 
 async function purgeVram(modelName: string) {
   try {
-    await axios.post(`${OLLAMA_URL}/api/generate`, { model: modelName, keep_alive: 0 })
+    await axios.post(`${OLLAMA_URL}/api/generate`, { model: modelName, keep_alive: 0 }, { timeout: 8000 })
     console.log(`[Ollama] Explicitly purged ${modelName} from VRAM`)
   } catch (e) {
     console.error(`[Ollama] Purge failed:`, e)

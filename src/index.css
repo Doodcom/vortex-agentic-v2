@@ -112,6 +112,11 @@ body { margin: 0; overflow: hidden; }
 }
 
 /* ── Cards ────────────────────────────────────────── */
+.v-card-scroll {
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+}
+
 .v-card {
   background: linear-gradient(
     135deg,
