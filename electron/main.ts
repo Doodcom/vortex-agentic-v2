@@ -2,10 +2,11 @@ import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog, shell } f
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { exec, spawn } from 'node:child_process'
-import { readFileSync, createWriteStream } from 'node:fs'
+import { readFileSync, openSync } from 'node:fs'
+import http from 'node:http'
 import os from 'node:os'
 import si from 'systeminformation'
-import { setupOllamaHandlers } from './ollama'
+import { setupOllamaHandlers, cancelAndPurge } from './ollama'
 import { setupSystemHandlers } from './system'
 import { setupRagHandlers } from './rag'
 import { setupDbHandlers, startResourcePoller } from './db'
@@ -21,25 +22,34 @@ let win: BrowserWindow | null
 let tray: Tray | null = null
 let comfyProcess: any = null
 
-function startComfyUI() {
+async function startComfyUI() {
   const comfyDir = path.join(process.env.HOME || os.homedir(), '.comfyui-headless')
   const comfyPath = path.join(comfyDir, 'start-engine.sh')
   const logPath = path.join(app.getPath('userData'), 'comfyui.log')
+
+  // If ComfyUI is already running, skip spawn — avoids broken stdout pipe on app restart
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port: 8188, path: '/system_stats', method: 'GET', timeout: 1500 }, (res) => {
+        res.resume()
+        res.statusCode === 200 ? resolve() : reject(new Error('bad status'))
+      })
+      req.on('error', reject)
+      req.on('timeout', () => { req.destroy(); reject(new Error('timeout')) })
+      req.end()
+    })
+    console.log('[Main] ComfyUI already running on :8188 — skipping spawn')
+    return
+  } catch { /* not running, proceed to spawn */ }
+
   console.log('[Main] Starting ComfyUI backend in:', comfyDir)
-
-  const logStream = createWriteStream(logPath, { flags: 'a' })
-  logStream.on('error', (err) => console.error('[ComfyUI] Log stream error:', err))
-
+  // Use a file descriptor (not a pipe) so ComfyUI logs survive Vortex restarts without broken pipe
+  const logFd = openSync(logPath, 'a')
   comfyProcess = spawn('bash', [comfyPath], {
     cwd: comfyDir,
     detached: true,
-    stdio: ['ignore', 'pipe', 'pipe']
+    stdio: ['ignore', logFd, logFd]
   })
-
-  comfyProcess.stdout?.on('error', () => {})
-  comfyProcess.stderr?.on('error', () => {})
-  comfyProcess.stdout?.pipe(logStream, { end: false })
-  comfyProcess.stderr?.pipe(logStream, { end: false })
   comfyProcess.unref()
 }
 
@@ -91,10 +101,11 @@ function createWindow() {
     },
   })
 
-  // Hide to tray on close instead of quitting
+  // Hide to tray on close instead of quitting — purge VRAM so GPU is freed while minimised
   win.on('close', (e) => {
     if (!app.isQuiting) {
       e.preventDefault()
+      cancelAndPurge().catch(() => {})
       win?.hide()
     }
   })
@@ -220,8 +231,15 @@ app.on('window-all-closed', () => {
   // Do not quit — app lives in the tray
 })
 
-app.on('before-quit', () => {
-  (app as any).isQuiting = true
+app.on('before-quit', (event) => {
+  if (!(app as any).isQuiting) {
+    (app as any).isQuiting = true
+    event.preventDefault()
+    // Unload model from VRAM before exit; 3s cap so a stuck Ollama can't block shutdown
+    Promise.race([cancelAndPurge(), new Promise(r => setTimeout(r, 3000))])
+      .catch(() => {})
+      .finally(() => app.quit())
+  }
 })
 
 ipcMain.handle('show-context-menu', (event, props) => {
@@ -289,8 +307,8 @@ ipcMain.handle('ollama-service-stop', async () => {
   })
 })
 
-app.whenReady().then(() => {
-  startComfyUI()
+app.whenReady().then(async () => {
+  await startComfyUI()
   createWindow()
   createTray()
 })

@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { notify } from '../lib/notifications'
-import { VORTEX_MODELS, DEFAULT_MODEL } from '../lib/models'
+import { VORTEX_MODELS, DEFAULT_MODEL, VISION_MODELS } from '../lib/models'
 
 export interface Session {
   id: number
@@ -11,11 +11,16 @@ export interface Session {
 
 export function useOllama() {
   const [models, setModels] = useState<any[]>(VORTEX_MODELS)
-  const [activeModel, setActiveModelState] = useState<string>(
-    () => localStorage.getItem('vortex-default-model') ?? DEFAULT_MODEL
-  )
+  const [activeModel, setActiveModelState] = useState<string>(() => {
+    const saved = localStorage.getItem('vortex-default-model')
+    // Embedding-only models can't do chat — reject them on load.
+    if (!saved || /embed|embedding|bge-|all-minilm/i.test(saved)) return DEFAULT_MODEL
+    return saved
+  })
 
   const setActiveModel = (m: string) => {
+    // Block embedding models from being selected as chat model (causes 500 errors).
+    if (/embed|embedding|bge-|all-minilm/i.test(m)) return
     setActiveModelState(m)
     localStorage.setItem('vortex-default-model', m)
     window.dispatchEvent(new CustomEvent('vortex-model-change', { detail: m }))
@@ -43,6 +48,7 @@ export function useOllama() {
   const [lastRoutedModel, setLastRoutedModel] = useState('')
   const [agentMode, setAgentModeState] = useState(() => localStorage.getItem('vortex-agent-mode') === 'true')
   const [orchestraMode, setOrchestraModeState] = useState(() => localStorage.getItem('vortex-orchestra-mode') === 'true')
+  const [thinkMode, setThinkModeState] = useState(() => localStorage.getItem('vortex-think-mode') === 'true')
   const currentResponseRef = useRef('')
 
   const setSmartRoute = (v: boolean) => {
@@ -58,6 +64,11 @@ export function useOllama() {
   const setOrchestraMode = (v: boolean) => {
     setOrchestraModeState(v)
     localStorage.setItem('vortex-orchestra-mode', String(v))
+  }
+
+  const setThinkMode = (v: boolean) => {
+    setThinkModeState(v)
+    localStorage.setItem('vortex-think-mode', String(v))
   }
 
   function pickModel(content: string, baseModel: string): string {
@@ -128,24 +139,36 @@ export function useOllama() {
   // ── Init ─────────────────────────────────────────────────────────────────────
   const fetchModels = useCallback(async () => {
     if (!(window as any).electron) {
-      setModels(VORTEX_MODELS)
+      setModels(VORTEX_MODELS.map(m => ({ ...m, installed: true })))
       return
     }
     try {
       const list = await (window as any).electron.ollamaListModels()
       
-      // FORCE SYNC: Override Ollama's metadata with our professional tier labels
+      // Map our professional tier labels to what is actually installed
       const merged = VORTEX_MODELS.map(vm => {
         const found = list.find((m: any) => m.name === vm.name)
         return {
           ...vm,
           size: found ? found.size : vm.size,
-          // We keep OUR labels, not Ollama's generic ones
+          installed: !!found
         }
       })
-      setModels(merged)
+
+      // Also include models that are installed but NOT in our VORTEX_MODELS list.
+      // Use the full tagged name as the label so we don't get duplicate "qwen2.5-coder" entries.
+      const others = list
+        .filter((m: any) => !VORTEX_MODELS.some(vm => vm.name === m.name))
+        .map((m: any) => ({
+          name: m.name,
+          size: m.size,
+          label: m.name.replace(':latest', ''),
+          installed: true
+        }))
+
+      setModels([...merged, ...others])
     } catch {
-      setModels(VORTEX_MODELS)
+      setModels(VORTEX_MODELS.map(m => ({ ...m, installed: false })))
     }
   }, [])
 
@@ -267,6 +290,12 @@ export function useOllama() {
 
     setError(null)
     setIsStreaming(true)
+    // Qwen3 family supports per-message thinking toggle via /think or /no_think
+    // appended to the last user turn. DeepSeek-R1 always thinks regardless.
+    const isQwen3 = /^qwen3/.test(activeModel)
+    const apiContent = isQwen3
+      ? `${content}${content.endsWith(' ') ? '' : ' '}${thinkMode ? '/think' : '/no_think'}`
+      : content
     const userMsg = { role: 'user', content, images }
     const newMessages = [...messages, userMsg]
     setMessages(newMessages)
@@ -286,6 +315,12 @@ export function useOllama() {
     // 128k chars is roughly 32k tokens, ideal for 14B/30B models on high-end hardware.
     const MAX_CONTEXT_CHARS = 128000
     let apiMessages = newMessages.filter((m: any) => m.role !== 'tool_step')
+    // Swap last user turn for the /think-suffixed variant — keeps original in UI.
+    if (apiContent !== content && apiMessages.length > 0) {
+      apiMessages = apiMessages.map((m: any, i: number) =>
+        i === apiMessages.length - 1 ? { ...m, content: apiContent } : m
+      )
+    }
     let totalChars = apiMessages.reduce((s: number, m: any) => s + (m.content?.length ?? 0), 0)
     while (totalChars > MAX_CONTEXT_CHARS && apiMessages.length > 4) {
       totalChars -= apiMessages.shift()!.content.length
@@ -297,7 +332,12 @@ export function useOllama() {
       ]
     }
 
-    const modelToUse = pickModel(content, activeModel)
+    // Auto-route to a vision-capable model when images are attached.
+    let modelToUse = pickModel(content, activeModel)
+    if (images && images.length > 0 && !VISION_MODELS.has(modelToUse)) {
+      const vision = models.find((m: any) => m.installed && VISION_MODELS.has(m.name))
+      if (vision) modelToUse = vision.name
+    }
     setLastRoutedModel(modelToUse)
 
     const customPrompt = localStorage.getItem('vortex-custom-prompt') ?? ''
@@ -312,7 +352,7 @@ export function useOllama() {
       setError(result.error || 'Failed to start chat')
       setIsStreaming(false)
     }
-  }, [messages, activeModel, isStreaming, agentMode, orchestraMode, renameSession])
+  }, [messages, activeModel, isStreaming, agentMode, orchestraMode, thinkMode, renameSession])
 
   const cancelStream = useCallback(async () => {
     setIsStreaming(false)
@@ -357,6 +397,8 @@ export function useOllama() {
     setAgentMode,
     orchestraMode,
     setOrchestraMode,
+    thinkMode,
+    setThinkMode,
     tokenUsage,
   }
 }

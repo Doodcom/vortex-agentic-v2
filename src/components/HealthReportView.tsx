@@ -62,15 +62,64 @@ function ScoreRing({ score }: { score: number }) {
   )
 }
 
+function buildBaseReport(data: Record<string, any>): Report {
+  const cpu = Math.round(data.cpu?.load ?? 0)
+  const mem = Math.round(data.memPct ?? 0)
+  const disk = Math.round(data.diskPct ?? 0)
+  const errors = data.errorCount ?? 0
+  const failed = data.failedServices ?? 0
+  const updates = data.updateCount ?? 0
+
+  let score = 100
+  if (cpu > 85) score -= 10; else if (cpu > 70) score -= 4
+  if (mem > 90) score -= 20; else if (mem > 75) score -= 8
+  if (disk > 90) score -= 20; else if (disk > 80) score -= 10
+  if (errors > 20) score -= 15; else if (errors > 5) score -= 8; else if (errors > 0) score -= 3
+  score -= Math.min(failed * 12, 30)
+  if (updates > 30) score -= 8; else if (updates > 10) score -= 3
+  score = Math.max(0, score)
+
+  const issues: string[] = []
+  if (failed > 0) issues.push(`${failed} failed systemd unit${failed > 1 ? 's' : ''}`)
+  if (mem > 75) issues.push(`high RAM usage (${mem}%)`)
+  if (disk > 80) issues.push(`disk nearing capacity (${disk}%)`)
+  if (errors > 5) issues.push(`${errors} recent journal errors`)
+  if (updates > 10) issues.push(`${updates} pending updates`)
+
+  const summary = issues.length === 0
+    ? `System is healthy. CPU ${cpu}%, RAM ${mem}%, disk ${disk}% — all within normal parameters.`
+    : `System has ${issues.length} concern${issues.length > 1 ? 's' : ''}: ${issues.join(', ')}. Review the metrics below.`
+
+  const recs: string[] = []
+  if (failed > 0) recs.push(`Investigate failed units: ${data.failedNames || 'run "systemctl --failed"'}`)
+  if (updates > 0) recs.push(`Apply ${updates} pending package update${updates > 1 ? 's' : ''} with "sudo pacman -Syu"`)
+  if (errors > 5) recs.push('Review journal errors with "journalctl -p 3 -n 50 --no-pager"')
+  if (mem > 75) recs.push('Check top memory consumers with "ps aux --sort=-%mem | head -10"')
+  if (disk > 80) recs.push('Free disk space — run the Cleaner or "paccache -r" to remove old package caches')
+
+  const sections: ReportSection[] = [
+    { title: 'CPU', status: cpu > 85 ? 'warn' : 'ok', detail: `Load: ${cpu}%` },
+    { title: 'RAM', status: mem > 90 ? 'error' : mem > 75 ? 'warn' : 'ok', detail: `Used: ${mem}%` },
+    { title: 'Disk', status: disk > 90 ? 'error' : disk > 80 ? 'warn' : 'ok', detail: `Root: ${disk}% used` },
+    { title: 'Journal Errors', status: errors > 20 ? 'error' : errors > 5 ? 'warn' : 'ok', detail: `${errors} recent errors` },
+    { title: 'Failed Services', status: failed > 0 ? 'error' : 'ok', detail: `${failed} failed units` },
+    { title: 'Pending Updates', status: updates > 30 ? 'warn' : 'ok', detail: `${updates} packages` },
+  ]
+
+  return { score, summary, sections, recommendations: recs, generatedAt: Date.now() }
+}
+
 export default function HealthReportView() {
   const [report, setReport] = useState<Report | null>(null)
   const [loading, setLoading] = useState(false)
   const [stage, setStage] = useState('')
+  const [aiEnhanced, setAiEnhanced] = useState(false)
 
   const generate = async () => {
     if (loading) return
     setLoading(true)
     setReport(null)
+    setAiEnhanced(false)
 
     const el = (window as any).electron
     const data: Record<string, any> = {}
@@ -109,9 +158,15 @@ export default function HealthReportView() {
       data.updateCount = (upd.repo?.length ?? 0) + (upd.aur?.length ?? 0)
     } catch {}
 
-    setStage('Asking AI…')
+    // Show base report immediately — no AI required
+    const base = buildBaseReport(data)
+    setReport(base)
 
-    const prompt = `You are a Linux system health analyst. Analyse the following data and produce a health report.
+    // Optionally enhance with AI if a model is configured
+    const model = localStorage.getItem('vortex-default-model')
+    if (model) {
+      setStage('Enhancing with AI…')
+      const prompt = `You are a Linux system health analyst. Analyse the following data and produce a concise health report.
 
 SYSTEM DATA:
 - CPU Load: ${Math.round(data.cpu?.load ?? 0)}%
@@ -129,19 +184,19 @@ Respond with:
 
 Be concise and direct.`
 
-    try {
-      const model = localStorage.getItem('vortex-default-model') ?? 'llama3.2:latest'
-      let fullText = ''
-      await new Promise<void>((resolve) => {
-        const unsub = el.on('ollama-stream', (chunk: string) => { fullText += chunk })
-        el.ollamaChat({ model, messages: [{ role: 'user', content: prompt }] })
-          .then(() => { unsub(); resolve() })
-          .catch(() => { unsub(); resolve() })
-      })
-      if (fullText) setReport(parseReport(fullText, data))
-      else setReport({ score: 0, summary: 'Could not generate report — is Ollama running?', sections: [], recommendations: [], generatedAt: Date.now() })
-    } catch (e: any) {
-      setReport({ score: 0, summary: `Error: ${e.message}`, sections: [], recommendations: [], generatedAt: Date.now() })
+      try {
+        let fullText = ''
+        await new Promise<void>((resolve) => {
+          const unsub = el.on('ollama-stream', (chunk: string) => { fullText += chunk })
+          el.ollamaChat({ model, messages: [{ role: 'user', content: prompt }] })
+            .then(() => { unsub(); resolve() })
+            .catch(() => { unsub(); resolve() })
+        })
+        if (fullText) {
+          setReport(parseReport(fullText, data))
+          setAiEnhanced(true)
+        }
+      } catch {}
     }
 
     setStage('')
@@ -164,8 +219,8 @@ Be concise and direct.`
 
       {!report && !loading && (
         <div style={{ padding: '48px', textAlign: 'center', border: '2px dashed rgba(255,255,255,0.06)', borderRadius: '12px', color: '#3f3f46', fontSize: '13px', fontStyle: 'italic' }}>
-          Click "Generate Health Report" to run an AI-powered system analysis.<br />
-          <span style={{ fontSize: '11px' }}>Gathers disk, memory, journal errors, failed services, and pending updates.</span>
+          Click "Generate Health Report" to scan your system.<br />
+          <span style={{ fontSize: '11px' }}>Gathers disk, memory, journal errors, failed services, and pending updates. AI summary available if a model is configured.</span>
         </div>
       )}
 
@@ -175,7 +230,11 @@ Be concise and direct.`
           <div style={{ display: 'flex', gap: '20px', alignItems: 'center', padding: '20px', background: 'rgba(255,255,255,0.02)', border: `1px solid ${SCORE_COLOR(report.score)}22`, borderRadius: '12px' }}>
             <ScoreRing score={report.score} />
             <div style={{ flex: 1 }}>
-              <div style={{ fontSize: '11px', fontFamily: 'monospace', fontWeight: 700, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '6px' }}>System Health Score</div>
+              <div style={{ fontSize: '11px', fontFamily: 'monospace', fontWeight: 700, color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                System Health Score
+                {aiEnhanced && <span style={{ fontSize: '8px', background: 'rgba(16,185,129,0.12)', border: '1px solid rgba(16,185,129,0.25)', color: '#34d399', padding: '1px 6px', borderRadius: '4px', letterSpacing: '0.08em' }}>AI</span>}
+                {!aiEnhanced && loading && <span style={{ fontSize: '8px', color: '#3f3f46' }}>{stage}</span>}
+              </div>
               <p style={{ fontSize: '13px', color: '#e2e8f0', lineHeight: 1.7, margin: 0 }}>{report.summary}</p>
               <div style={{ fontSize: '9px', color: '#3f3f46', fontFamily: 'monospace', marginTop: '8px' }}>Generated {new Date(report.generatedAt).toLocaleTimeString()}</div>
             </div>

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
-import { useTheme } from './ThemeProvider'
-import { Volume2, VolumeX, Zap, ZapOff, Palette, Bot, Check, Info, FileText, Brain, Trash2, Plus, Cpu, Fingerprint, Globe, ShieldCheck, Bell } from 'lucide-react'
+import { useTheme, type ThemeType } from './ThemeProvider'
+import { Volume2, VolumeX, Zap, ZapOff, Palette, Bot, Check, Info, FileText, Brain, Trash2, Plus, Cpu, Fingerprint, Globe, ShieldCheck, Bell, Sparkles } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { VORTEX_MODELS, DEFAULT_MODEL } from '../lib/models'
 import { notify } from '../lib/notifications'
@@ -9,13 +9,17 @@ export const ALERT_THRESHOLDS_KEY = 'vortex-alert-thresholds'
 export interface AlertThresholds { cpu: number; ram: number; gpu: number }
 export const DEFAULT_THRESHOLDS: AlertThresholds = { cpu: 90, ram: 90, gpu: 95 }
 
-type ThemeType = 'vortex-red' | 'cyber-blue' | 'neon-gold' | 'matrix-green'
+const COLOR_THEMES: { id: ThemeType; label: string; color: string }[] = [
+  { id: 'vortex-red',    label: 'Red',    color: '#ef4444' },
+  { id: 'cyber-blue',   label: 'Blue',   color: '#22d3ee' },
+  { id: 'neon-gold',    label: 'Gold',   color: '#f59e0b' },
+  { id: 'matrix-green', label: 'Green',  color: '#10b981' },
+]
 
-const THEME_META: { id: ThemeType; label: string; color: string }[] = [
-  { id: 'vortex-red',    label: 'Vortex Red',    color: '#ef4444' },
-  { id: 'cyber-blue',   label: 'Cyber Blue',    color: '#22d3ee' },
-  { id: 'neon-gold',    label: 'Neon Gold',     color: '#f59e0b' },
-  { id: 'matrix-green', label: 'Matrix Green',  color: '#10b981' },
+const VISUAL_THEMES: { id: ThemeType; label: string; color: string; preview: string }[] = [
+  { id: 'crt-retro',    label: 'CRT Retro',    color: '#39ff14', preview: 'scanlines' },
+  { id: 'neon-pulse',   label: 'Neon Pulse',   color: '#e040fb', preview: 'pulse' },
+  { id: 'holographic',  label: 'Holographic',  color: '#00d4ff', preview: 'holo' },
 ]
 
 function Toggle({ enabled, onChange, label, sublabel, icon: Icon, offIcon: OffIcon }: {
@@ -29,7 +33,7 @@ function Toggle({ enabled, onChange, label, sublabel, icon: Icon, offIcon: OffIc
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-        <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: enabled ? 'rgba(var(--crimson-rgb,239,68,68),0.1)' : 'rgba(255,255,255,0.03)', border: `1px solid ${enabled ? 'rgba(239,68,68,0.2)' : 'rgba(255,255,255,0.06)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s' }}>
+        <div style={{ width: '32px', height: '32px', borderRadius: '8px', background: enabled ? 'var(--crimson-10)' : 'rgba(255,255,255,0.03)', border: `1px solid ${enabled ? 'var(--crimson-20)' : 'rgba(255,255,255,0.06)'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', transition: 'all 0.2s' }}>
           {enabled ? <Icon size={14} style={{ color: 'var(--crimson)' }} /> : <OffIcon size={14} style={{ color: '#52525b' }} />}
         </div>
         <div>
@@ -43,7 +47,7 @@ function Toggle({ enabled, onChange, label, sublabel, icon: Icon, offIcon: OffIc
           width: '44px', height: '24px', borderRadius: '12px',
           background: enabled ? 'var(--crimson)' : 'rgba(255,255,255,0.08)',
           border: 'none', cursor: 'pointer', position: 'relative', transition: 'background 0.2s',
-          boxShadow: enabled ? '0 0 8px rgba(239,68,68,0.4)' : 'none'
+          boxShadow: enabled ? '0 0 8px var(--crimson-40)' : 'none'
         }}
       >
         <motion.div
@@ -142,7 +146,7 @@ function AlertThresholdsEditor() {
         ) : <span />}
         <button
           onClick={save}
-          style={{ padding: '7px 18px', borderRadius: '8px', fontSize: '10px', fontFamily: 'monospace', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)', color: 'var(--crimson)' }}
+          style={{ padding: '7px 18px', borderRadius: '8px', fontSize: '10px', fontFamily: 'monospace', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer', background: 'var(--crimson-10)', border: '1px solid var(--crimson-25)', color: 'var(--crimson)' }}
         >
           Save Thresholds
         </button>
@@ -279,10 +283,13 @@ export default function SettingsPage() {
         <div style={{ marginBottom: '20px' }}>
           <div style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: '#a1a1aa', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '12px', display: 'flex', alignItems: 'center', gap: '8px' }}>
             <Palette size={12} />
-            Accent Theme
+            Theme
           </div>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '10px' }}>
-            {THEME_META.map(t => (
+
+          {/* Colour accents */}
+          <div style={{ fontSize: '8px', fontFamily: 'monospace', color: '#3f3f46', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '8px' }}>Colour Accents</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '8px', marginBottom: '14px' }}>
+            {COLOR_THEMES.map(t => (
               <button
                 key={t.id}
                 onClick={() => handleTheme(t.id)}
@@ -294,11 +301,51 @@ export default function SettingsPage() {
               >
                 <div style={{ width: '20px', height: '20px', borderRadius: '50%', background: t.color, boxShadow: theme.name === t.id ? `0 0 10px ${t.color}80` : 'none' }} />
                 <span style={{ fontSize: '8px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.1em', color: theme.name === t.id ? t.color : '#52525b' }}>
-                  {t.label.split(' ')[1]}
+                  {t.label}
                 </span>
                 {theme.name === t.id && <Check size={10} style={{ color: t.color }} />}
               </button>
             ))}
+          </div>
+
+          {/* Visual / animated themes */}
+          <div style={{ fontSize: '8px', fontFamily: 'monospace', color: '#3f3f46', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: '8px', display: 'flex', alignItems: 'center', gap: '5px' }}>
+            <Sparkles size={9} style={{ color: '#52525b' }} /> Visual FX
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+            {VISUAL_THEMES.map(t => {
+              const isActive = theme.name === t.id
+              return (
+                <button
+                  key={t.id}
+                  onClick={() => handleTheme(t.id)}
+                  style={{
+                    padding: '14px 8px', borderRadius: '12px',
+                    border: `1px solid ${isActive ? t.color : 'rgba(255,255,255,0.05)'}`,
+                    background: isActive ? `${t.color}12` : 'rgba(255,255,255,0.02)',
+                    cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px', transition: 'all 0.2s', position: 'relative', overflow: 'hidden'
+                  }}
+                >
+                  {/* Animated preview swatch */}
+                  {t.preview === 'scanlines' && (
+                    <div style={{ width: '36px', height: '20px', borderRadius: '4px', background: t.color, position: 'relative', overflow: 'hidden', boxShadow: isActive ? `0 0 10px ${t.color}80` : 'none' }}>
+                      <div style={{ position: 'absolute', inset: 0, backgroundImage: 'repeating-linear-gradient(0deg, transparent 0px, transparent 1px, rgba(0,0,0,0.35) 1px, rgba(0,0,0,0.35) 2px)' }} />
+                    </div>
+                  )}
+                  {t.preview === 'pulse' && (
+                    <div style={{ width: '36px', height: '20px', borderRadius: '4px', background: `${t.color}20`, border: `1px solid ${t.color}`, boxShadow: isActive ? `0 0 12px ${t.color}60, 0 0 24px ${t.color}30` : `0 0 6px ${t.color}40` }} />
+                  )}
+                  {t.preview === 'holo' && (
+                    <div style={{ width: '36px', height: '20px', borderRadius: '4px', background: 'linear-gradient(135deg, #ff0080, #7f00ff, #00d4ff, #00ff88)', opacity: isActive ? 1 : 0.6 }} />
+                  )}
+                  <span style={{ fontSize: '8px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.08em', color: isActive ? t.color : '#52525b', lineHeight: 1.3, textAlign: 'center' }}>
+                    {t.label}
+                  </span>
+                  {isActive && <Check size={10} style={{ color: t.color }} />}
+                  <div style={{ position: 'absolute', top: '5px', right: '5px', fontSize: '7px', fontFamily: 'monospace', color: '#3f3f46', background: 'rgba(255,255,255,0.04)', padding: '1px 4px', borderRadius: '3px' }}>FX</div>
+                </button>
+              )
+            })}
           </div>
         </div>
 
@@ -341,8 +388,8 @@ export default function SettingsPage() {
                 style={{
                   display: 'flex', alignItems: 'center', justifyContent: 'space-between',
                   padding: '10px 14px', borderRadius: '10px', cursor: 'pointer', transition: 'all 0.15s',
-                  background: isActive ? 'rgba(239,68,68,0.08)' : 'rgba(255,255,255,0.02)',
-                  border: `1px solid ${isActive ? 'rgba(239,68,68,0.25)' : 'rgba(255,255,255,0.04)'}`,
+                  background: isActive ? 'var(--crimson-08)' : 'rgba(255,255,255,0.02)',
+                  border: `1px solid ${isActive ? 'var(--crimson-25)' : 'rgba(255,255,255,0.04)'}`,
                 }}
               >
                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
@@ -392,7 +439,7 @@ export default function SettingsPage() {
               fontFamily: 'monospace', resize: 'vertical', outline: 'none',
               lineHeight: '1.6',
             }}
-            onFocus={e => { e.target.style.borderColor = 'rgba(239,68,68,0.3)' }}
+            onFocus={e => { e.target.style.borderColor = 'var(--crimson-30)' }}
             onBlur={e => { e.target.style.borderColor = 'rgba(255,255,255,0.08)' }}
           />
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '10px' }}>
@@ -407,7 +454,7 @@ export default function SettingsPage() {
               style={{
                 padding: '7px 18px', borderRadius: '8px', fontSize: '10px', fontFamily: 'monospace',
                 fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer',
-                background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)',
+                background: 'var(--crimson-10)', border: '1px solid var(--crimson-25)',
                 color: 'var(--crimson)', transition: 'all 0.15s',
               }}
             >
@@ -438,7 +485,7 @@ export default function SettingsPage() {
               padding: '10px 14px', color: '#f4f4f5', fontSize: '12px',
               fontFamily: 'monospace', outline: 'none',
             }}
-            onFocus={e => { e.target.style.borderColor = 'rgba(239,68,68,0.3)' }}
+            onFocus={e => { e.target.style.borderColor = 'var(--crimson-30)' }}
             onBlur={e => { e.target.style.borderColor = 'rgba(255,255,255,0.08)' }}
           />
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginTop: '10px' }}>
@@ -453,7 +500,7 @@ export default function SettingsPage() {
               style={{
                 padding: '7px 18px', borderRadius: '8px', fontSize: '10px', fontFamily: 'monospace',
                 fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer',
-                background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.25)',
+                background: 'var(--crimson-10)', border: '1px solid var(--crimson-25)',
                 color: 'var(--crimson)', transition: 'all 0.15s',
               }}
             >
@@ -478,14 +525,14 @@ export default function SettingsPage() {
               <button
                 key={mode}
                 onClick={() => handleVramMode(mode)}
-                style={{ padding: '7px 16px', borderRadius: '8px', fontSize: '10px', fontFamily: 'monospace', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer', background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.18)', color: 'var(--crimson)', transition: 'all 0.15s' }}
+                style={{ padding: '7px 16px', borderRadius: '8px', fontSize: '10px', fontFamily: 'monospace', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer', background: 'var(--crimson-07)', border: '1px solid var(--crimson-20)', color: 'var(--crimson)', transition: 'all 0.15s' }}
               >
                 VRAM: {mode}
               </button>
             ))}
             <button
               onClick={() => window.electron.ollamaPinVcache().then(r => { alert(r.success ? r.output : r.error) })}
-              style={{ padding: '7px 16px', borderRadius: '8px', fontSize: '10px', fontFamily: 'monospace', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer', background: 'rgba(239,68,68,0.07)', border: '1px solid rgba(239,68,68,0.18)', color: 'var(--crimson)', transition: 'all 0.15s' }}
+              style={{ padding: '7px 16px', borderRadius: '8px', fontSize: '10px', fontFamily: 'monospace', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em', cursor: 'pointer', background: 'var(--crimson-07)', border: '1px solid var(--crimson-20)', color: 'var(--crimson)', transition: 'all 0.15s' }}
             >
               Pin V-Cache
             </button>
@@ -506,7 +553,7 @@ export default function SettingsPage() {
           <button
             onClick={() => createSnapshot()}
             disabled={snapperBusy}
-            style={{ fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.1em', color: snapperBusy ? '#52525b' : 'var(--crimson)', background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: '6px', padding: '5px 12px', cursor: snapperBusy ? 'default' : 'pointer' }}
+            style={{ fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.1em', color: snapperBusy ? '#52525b' : 'var(--crimson)', background: 'var(--crimson-05)', border: '1px solid var(--crimson-15)', borderRadius: '6px', padding: '5px 12px', cursor: snapperBusy ? 'default' : 'pointer' }}
           >
             {snapperBusy ? 'Creating...' : 'Snapshot Now'}
           </button>
@@ -537,7 +584,7 @@ export default function SettingsPage() {
             placeholder='e.g. "User runs a Plex server on port 32400"'
             style={{ flex: 1, background: 'rgba(255,255,255,0.02)', border: '1px solid rgba(255,255,255,0.07)', borderRadius: '8px', padding: '8px 12px', color: '#f4f4f5', fontSize: '11px', fontFamily: 'monospace', outline: 'none' }}
           />
-          <button onClick={addMemory} style={{ padding: '8px 14px', borderRadius: '8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)', color: 'var(--crimson)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px', fontFamily: 'monospace', textTransform: 'uppercase' }}>
+          <button onClick={addMemory} style={{ padding: '8px 14px', borderRadius: '8px', background: 'var(--crimson-08)', border: '1px solid var(--crimson-20)', color: 'var(--crimson)', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '5px', fontSize: '10px', fontFamily: 'monospace', textTransform: 'uppercase' }}>
             <Plus size={11} /> Add
           </button>
         </div>
@@ -585,7 +632,7 @@ export default function SettingsPage() {
             <button
               onClick={runChwdDetect}
               disabled={chwdBusy}
-              style={{ fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.1em', color: chwdBusy ? '#52525b' : 'var(--crimson)', background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: '6px', padding: '5px 12px', cursor: chwdBusy ? 'default' : 'pointer' }}
+              style={{ fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.1em', color: chwdBusy ? '#52525b' : 'var(--crimson)', background: 'var(--crimson-05)', border: '1px solid var(--crimson-15)', borderRadius: '6px', padding: '5px 12px', cursor: chwdBusy ? 'default' : 'pointer' }}
             >
               {chwdBusy ? 'Scanning...' : 'Detect'}
             </button>
@@ -610,7 +657,7 @@ export default function SettingsPage() {
             <button
               onClick={runRateMirrors}
               disabled={mirrorBusy}
-              style={{ fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.1em', color: mirrorBusy ? '#52525b' : 'var(--crimson)', background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.15)', borderRadius: '6px', padding: '5px 12px', cursor: mirrorBusy ? 'default' : 'pointer' }}
+              style={{ fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.1em', color: mirrorBusy ? '#52525b' : 'var(--crimson)', background: 'var(--crimson-05)', border: '1px solid var(--crimson-15)', borderRadius: '6px', padding: '5px 12px', cursor: mirrorBusy ? 'default' : 'pointer' }}
             >
               {mirrorBusy ? 'Rating...' : 'Rate Mirrors'}
             </button>
@@ -670,7 +717,7 @@ export default function SettingsPage() {
             </div>
           ))}
         </div>
-        <div style={{ marginTop: '16px', padding: '10px 14px', borderRadius: '8px', background: 'rgba(239,68,68,0.04)', border: '1px solid rgba(239,68,68,0.1)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+        <div style={{ marginTop: '16px', padding: '10px 14px', borderRadius: '8px', background: 'var(--crimson-05)', border: '1px solid var(--crimson-10)', display: 'flex', alignItems: 'center', gap: '8px' }}>
           <Info size={12} style={{ color: 'var(--crimson)', flexShrink: 0 }} />
           <span style={{ fontSize: '10px', fontFamily: 'monospace', color: '#71717a' }}>
             All AI processing is local. No data leaves this machine.

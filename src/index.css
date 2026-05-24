@@ -29,13 +29,18 @@
 
 body { margin: 0; overflow: hidden; }
 
+@keyframes artifactFadeIn {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+
 /* ── App Shell ────────────────────────────────────── */
 .v-app {
   display: flex;
   height: 100vh;
   width: 100vw;
   background:
-    radial-gradient(ellipse 80% 60% at 15% -10%, rgba(244,63,94,0.07) 0%, transparent 55%),
+    radial-gradient(ellipse 80% 60% at 15% -10%, var(--crimson-07) 0%, transparent 55%),
     radial-gradient(ellipse 60% 50% at 85% 110%, rgba(6,182,212,0.06) 0%, transparent 55%),
     var(--ink-950);
 }
@@ -81,7 +86,7 @@ body { margin: 0; overflow: hidden; }
 }
 .v-nav-item.active {
   color: var(--crimson);
-  background: rgba(244,63,94,0.06);
+  background: var(--crimson-06);
 }
 .v-nav-item.active::before {
   content: '';
@@ -90,7 +95,7 @@ body { margin: 0; overflow: hidden; }
   top: 0;
   width: 3px;
   height: 100%;
-  background: linear-gradient(180deg, var(--crimson) 0%, rgba(244,63,94,0.2) 100%);
+  background: linear-gradient(180deg, var(--crimson) 0%, var(--crimson-20) 100%);
   border-radius: 0 2px 2px 0;
 }
 
@@ -137,7 +142,7 @@ body { margin: 0; overflow: hidden; }
 /* ── Typography ───────────────────────────────────── */
 .text-crimson   { color: var(--crimson); }
 .text-signal    { color: var(--signal); }
-.crimson-glow   { filter: drop-shadow(0 0 10px rgba(244,63,94,0.55)); }
+.crimson-glow   { filter: drop-shadow(0 0 10px var(--crimson-60)); }
 .signal-glow    { filter: drop-shadow(0 0 10px rgba(6,182,212,0.55)); }
 
 .v-h1 {
@@ -173,7 +178,7 @@ body { margin: 0; overflow: hidden; }
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 .v-artifact:hover {
-  border-color: rgba(244,63,94,0.2);
+  border-color: var(--crimson-20);
   box-shadow: 0 12px 40px rgba(0,0,0,0.5);
 }
 
@@ -227,8 +232,8 @@ body { margin: 0; overflow: hidden; }
   50%       { opacity: 0.4; transform: scale(0.85); }
 }
 @keyframes glow-breathe {
-  0%, 100% { box-shadow: 0 0 8px rgba(244,63,94,0.3); }
-  50%       { box-shadow: 0 0 20px rgba(244,63,94,0.6); }
+  0%, 100% { box-shadow: 0 0 8px var(--crimson-30); }
+  50%       { box-shadow: 0 0 20px var(--crimson-60); }
 }
 @keyframes slide-up {
   from { opacity: 0; transform: translateY(8px); }
@@ -268,7 +273,92 @@ body { margin: 0; overflow: hidden; }
   position: absolute;
   inset: -1px;
   border-radius: inherit;
-  background: linear-gradient(135deg, rgba(244,63,94,0.4), transparent 50%, rgba(6,182,212,0.2));
+  background: linear-gradient(135deg, var(--crimson-40), transparent 50%, rgba(6,182,212,0.2));
   z-index: -1;
   pointer-events: none;
+}
+
+/* ── Visual Theme Effects ──────────────────────────── */
+
+/* CRT Retro — scanlines + phosphor glow */
+@keyframes crt-flicker {
+  0%,94%,96%,100% { opacity: 1; }
+  95%,97%         { opacity: 0.96; }
+}
+[data-theme="crt-retro"] .v-app::before {
+  content: '';
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    transparent 0px, transparent 1px,
+    rgba(0,0,0,0.22) 1px, rgba(0,0,0,0.22) 2px
+  );
+  pointer-events: none;
+  z-index: 9000;
+}
+[data-theme="crt-retro"] .v-main {
+  animation: crt-flicker 9s linear infinite;
+}
+[data-theme="crt-retro"] .v-card {
+  border-color: var(--crimson-15);
+  box-shadow: 0 0 0 1px var(--crimson-10), inset 0 0 40px var(--crimson-05), 0 4px 20px rgba(0,0,0,0.8);
+}
+[data-theme="crt-retro"] .v-nav-item.active {
+  text-shadow: 0 0 8px var(--crimson), 0 0 18px var(--crimson-40);
+}
+[data-theme="crt-retro"] .v-header {
+  background: #010201;
+  border-bottom: 1px solid var(--crimson-20);
+}
+
+/* Neon Pulse — glowing pulsing borders */
+@keyframes neon-card-pulse {
+  0%, 100% {
+    border-color: var(--crimson-20);
+    box-shadow: 0 0 8px var(--crimson-15), 0 0 24px var(--crimson-08), 0 4px 20px rgba(0,0,0,0.6);
+  }
+  50% {
+    border-color: var(--crimson-40);
+    box-shadow: 0 0 16px var(--crimson-30), 0 0 50px var(--crimson-15), 0 0 90px var(--crimson-08), 0 4px 20px rgba(0,0,0,0.6);
+  }
+}
+@keyframes neon-sidebar-pulse {
+  0%, 100% { box-shadow:  4px 0 25px var(--crimson-10); }
+  50%       { box-shadow:  4px 0 50px var(--crimson-20); }
+}
+[data-theme="neon-pulse"] .v-card {
+  animation: neon-card-pulse 2.8s ease-in-out infinite;
+}
+[data-theme="neon-pulse"] .v-sidebar {
+  animation: neon-sidebar-pulse 2.8s ease-in-out infinite;
+}
+[data-theme="neon-pulse"] .v-nav-item.active {
+  text-shadow: 0 0 10px var(--crimson), 0 0 20px var(--crimson-40);
+}
+[data-theme="neon-pulse"] .v-header {
+  box-shadow: 0 2px 20px var(--crimson-10);
+}
+
+/* Holographic — rainbow-cycling accents */
+@keyframes holo-hue {
+  0%   { filter: hue-rotate(0deg)   saturate(1.4); }
+  100% { filter: hue-rotate(360deg) saturate(1.4); }
+}
+@keyframes holo-card-border {
+  0%   { border-color: rgba(0,212,255,0.14); box-shadow: 0 0 16px rgba(0,212,255,0.07),  0 4px 20px rgba(0,0,0,0.55); }
+  25%  { border-color: rgba(127,0,255,0.14); box-shadow: 0 0 16px rgba(127,0,255,0.07), 0 4px 20px rgba(0,0,0,0.55); }
+  50%  { border-color: rgba(255,0,128,0.14); box-shadow: 0 0 16px rgba(255,0,128,0.07), 0 4px 20px rgba(0,0,0,0.55); }
+  75%  { border-color: rgba(0,255,136,0.14); box-shadow: 0 0 16px rgba(0,255,136,0.07), 0 4px 20px rgba(0,0,0,0.55); }
+  100% { border-color: rgba(0,212,255,0.14); box-shadow: 0 0 16px rgba(0,212,255,0.07),  0 4px 20px rgba(0,0,0,0.55); }
+}
+[data-theme="holographic"] .v-nav-item.active::before {
+  background: linear-gradient(180deg, #ff0080 0%, #00d4ff 50%, #00ff88 100%);
+  animation: holo-hue 5s linear infinite;
+}
+[data-theme="holographic"] .v-card {
+  animation: holo-card-border 7s linear infinite;
+}
+[data-theme="holographic"] .v-sidebar {
+  animation: holo-hue 7s linear infinite;
+  filter: hue-rotate(0deg);
 }

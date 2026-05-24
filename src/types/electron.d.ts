@@ -122,6 +122,7 @@ export interface ElectronAPI {
   startupToggleDesktop: (p: { path: string; enabled: boolean }) => Promise<{ success: boolean; error?: string }>
   startupDeleteDesktop: (path: string) => Promise<{ success: boolean; error?: string }>
   startupToggleSystemd: (p: { unit: string; enable: boolean }) => Promise<{ success: boolean; error?: string }>
+  startupAddDesktop: (p: { name: string; exec: string; comment?: string }) => Promise<{ success: boolean; error?: string; path?: string }>
 
   // AI Memory
   memoryGetAll: () => Promise<{ id: number; fact: string; created_at: number }[]>

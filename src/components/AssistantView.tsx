@@ -1,9 +1,14 @@
-import { useState, useRef, useEffect } from 'react'
+import { useState, useRef, useEffect, useMemo, memo } from 'react'
+import { createPortal } from 'react-dom'
 import { useOllama, type Session } from '../hooks/useOllama'
+import { notify } from '../lib/notifications'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Send, Square, Bot, User, Loader2, AlertCircle, Activity, FolderOpen, RotateCcw, MessageSquare, Plus, Trash2, Check, X, Zap, Wrench, ChevronDown, ChevronRight, Terminal, Paperclip, Layers, Wand2, Copy, Network } from 'lucide-react'
+import { Send, Square, Bot, User, Loader2, AlertCircle, Activity, FolderOpen, RotateCcw, MessageSquare, Plus, Trash2, Check, X, Zap, Wrench, ChevronDown, ChevronRight, Terminal, Paperclip, Layers, Wand2, Copy, Network, Brain, Mic, MicOff, Volume2, VolumeX } from 'lucide-react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkMath from 'remark-math'
+import rehypeKatex from 'rehype-katex'
+import 'katex/dist/katex.min.css'
 import ArtifactView from './ArtifactView'
 import { useTheme } from './ThemeProvider'
 import { consumeTerminalQuery } from '../lib/terminalBridge'
@@ -35,6 +40,8 @@ export default function AssistantView() {
     setAgentMode,
     orchestraMode,
     setOrchestraMode,
+    thinkMode,
+    setThinkMode,
     tokenUsage,
   } = useOllama()
 
@@ -42,6 +49,22 @@ export default function AssistantView() {
   const [editingSessionId, setEditingSessionId] = useState<number | null>(null)
   const [editingName, setEditingName] = useState('')
   const [showContextPicker, setShowContextPicker] = useState(false)
+  const contextBtnRef = useRef<HTMLButtonElement | null>(null)
+  const [contextPickerPos, setContextPickerPos] = useState({ top: 0, left: 0 })
+  useEffect(() => {
+    if (!showContextPicker || !contextBtnRef.current) return
+    const reposition = () => {
+      const r = contextBtnRef.current?.getBoundingClientRect()
+      if (r) setContextPickerPos({ top: r.bottom + 6, left: r.left })
+    }
+    reposition()
+    window.addEventListener('resize', reposition)
+    window.addEventListener('scroll', reposition, true)
+    return () => {
+      window.removeEventListener('resize', reposition)
+      window.removeEventListener('scroll', reposition, true)
+    }
+  }, [showContextPicker])
   
   const [input, setInput] = useState(() => localStorage.getItem('vortex-ai-input') || '')
 
@@ -63,6 +86,88 @@ export default function AssistantView() {
     return s ? JSON.parse(s) : { rag: true, terminal: true, memory: true }
   })
   const [attachedFile, setAttachedFile] = useState<{ name: string; content: string; truncated?: boolean; type: 'text' | 'image' } | null>(null)
+  const [isRecording, setIsRecording] = useState(false)
+  const [isTranscribing, setIsTranscribing] = useState(false)
+  const [ttsEnabled, setTtsEnabled] = useState(() => localStorage.getItem('vortex-tts') === 'true')
+  useEffect(() => { localStorage.setItem('vortex-tts', String(ttsEnabled)) }, [ttsEnabled])
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const recordedChunksRef = useRef<Blob[]>([])
+
+  const startRecording = async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mime = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') ? 'audio/webm;codecs=opus' : 'audio/webm'
+      const rec = new MediaRecorder(stream, { mimeType: mime })
+      mediaRecorderRef.current = rec
+      recordedChunksRef.current = []
+      rec.ondataavailable = e => { if (e.data.size > 0) recordedChunksRef.current.push(e.data) }
+      rec.onstop = async () => {
+        stream.getTracks().forEach(t => t.stop())
+        const blob = new Blob(recordedChunksRef.current, { type: mime })
+        const arr = await blob.arrayBuffer()
+        const b64 = btoa(String.fromCharCode(...new Uint8Array(arr)))
+        setIsTranscribing(true)
+        try {
+          const res = await (window as any).electron?.voiceTranscribe?.({ audioBase64: b64, mimeType: mime })
+          if (res?.success && res.text) setInput(prev => (prev ? prev + ' ' : '') + res.text)
+          else notify('Transcription failed', res?.error || 'Whisper not available', 'error')
+        } finally { setIsTranscribing(false) }
+      }
+      rec.start()
+      setIsRecording(true)
+    } catch (e: any) {
+      notify('Microphone unavailable', e.message || 'Could not access microphone', 'error')
+    }
+  }
+
+  const stopRecording = () => {
+    mediaRecorderRef.current?.stop()
+    setIsRecording(false)
+  }
+
+  // Auto-TTS: when streaming ends, speak the last assistant message via Piper.
+  const lastSpokenRef = useRef<string>('')
+  const wasStreamingRef = useRef(false)
+  const currentAudioRef = useRef<HTMLAudioElement | null>(null)
+  const [isSpeaking, setIsSpeaking] = useState(false)
+  const stopSpeech = () => {
+    const a = currentAudioRef.current
+    if (a) { try { a.pause(); a.currentTime = 0 } catch {} }
+    currentAudioRef.current = null
+    setIsSpeaking(false)
+  }
+  useEffect(() => {
+    if (wasStreamingRef.current && !isStreaming && ttsEnabled) {
+      const last = [...messages].reverse().find(m => m.role === 'assistant' && m.content)
+      if (last && last.content !== lastSpokenRef.current) {
+        lastSpokenRef.current = last.content
+        // Strip code blocks, markdown, and <think> reasoning — TTS only needs prose.
+        const clean = last.content
+          .replace(/<think>[\s\S]*?<\/think>/g, '')
+          .replace(/```[\s\S]*?```/g, '')
+          .replace(/`[^`]*`/g, '')
+          .replace(/[*_#>]/g, '')
+          .trim()
+          .slice(0, 800)
+        if (clean) {
+          ;(window as any).electron?.voiceSpeak?.({ text: clean }).then((res: any) => {
+            if (res?.success && res.audioBase64) {
+              try {
+                stopSpeech() // interrupt any previous playback first
+                const audio = new Audio(`data:audio/wav;base64,${res.audioBase64}`)
+                currentAudioRef.current = audio
+                audio.onended = () => { currentAudioRef.current = null; setIsSpeaking(false) }
+                audio.onerror = () => { currentAudioRef.current = null; setIsSpeaking(false) }
+                setIsSpeaking(true)
+                audio.play().catch(() => { setIsSpeaking(false) })
+              } catch { setIsSpeaking(false) }
+            }
+          }).catch(() => {})
+        }
+      }
+    }
+    wasStreamingRef.current = isStreaming
+  }, [isStreaming, ttsEnabled, messages])
 
   const toggleFlag = (key: 'rag' | 'terminal' | 'memory') => {
     setContextFlags(prev => {
@@ -218,7 +323,7 @@ export default function AssistantView() {
   }
 
   return (
-    <div style={{ display: 'flex', gap: '16px' }}>
+    <div style={{ display: 'flex', gap: '16px', height: 'calc(100vh - 220px)', overflow: 'hidden' }}>
 
       {/* Sessions panel */}
       <AnimatePresence>
@@ -250,7 +355,7 @@ export default function AssistantView() {
                     style={{
                       display: 'flex', alignItems: 'center', gap: '8px', padding: '8px 12px',
                       cursor: 'pointer', borderBottom: '1px solid rgba(255,255,255,0.02)',
-                      background: s.id === currentSessionId ? 'rgba(239,68,68,0.07)' : 'transparent',
+                      background: s.id === currentSessionId ? 'var(--crimson-07)' : 'transparent',
                       borderLeft: `2px solid ${s.id === currentSessionId ? 'var(--crimson)' : 'transparent'}`,
                     }}
                   >
@@ -296,7 +401,7 @@ export default function AssistantView() {
       </AnimatePresence>
 
       {/* Main chat column */}
-    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, maxWidth: '900px', margin: '0 auto', position: 'relative' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', flex: 1, minWidth: 0, maxWidth: '900px', margin: '0 auto', position: 'relative', overflow: 'hidden' }}>
       
       {/* Node Switching Panel */}
       <div className="v-card" style={{ padding: '16px', marginBottom: '24px' }}>
@@ -317,38 +422,46 @@ export default function AssistantView() {
 
         {showNodeManager && (
           <>
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: '8px', marginBottom: '12px' }}>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: '8px', marginBottom: '12px' }}>
             <QuickModelBtn
-              label="1.5B Nano"
-              name="qwen2.5-coder:1.5b"
-              isAvailable={models.some(m => m.name.includes('1.5b'))}
+              label="8B Fast"
+              name="qwen3:8b"
+              isAvailable={models.find(m => m.name === 'qwen3:8b')?.installed}
               onSelect={(n: string) => { setActiveModel(n); playSound('click'); }}
               onPull={(n: string) => { pullModel(n); playSound('click'); }}
-              isActive={activeModel.includes('1.5b')}
+              isActive={activeModel === 'qwen3:8b'}
             />
             <QuickModelBtn
-              label="8B Light"
-              name="llama3.1:8b"
-              isAvailable={models.some(m => m.name.includes('8b'))}
+              label="14B Thinker"
+              name="qwen3:14b"
+              isAvailable={models.find(m => m.name === 'qwen3:14b')?.installed}
               onSelect={(n: string) => { setActiveModel(n); playSound('click'); }}
               onPull={(n: string) => { pullModel(n); playSound('click'); }}
-              isActive={activeModel.includes('8b')}
-            />
-            <QuickModelBtn
-              label="14B Think"
-              name="deepseek-r1:14b"
-              isAvailable={models.some(m => m.name.includes('14b'))}
-              onSelect={(n: string) => { setActiveModel(n); playSound('click'); }}
-              onPull={(n: string) => { pullModel(n); playSound('click'); }}
-              isActive={activeModel.includes('14b')}
+              isActive={activeModel === 'qwen3:14b'}
             />
             <QuickModelBtn
               label="30B Coder"
               name="qwen3-coder:30b"
-              isAvailable={models.some(m => m.name.includes('30b'))}
+              isAvailable={models.find(m => m.name === 'qwen3-coder:30b')?.installed}
               onSelect={(n: string) => { setActiveModel(n); playSound('click'); }}
               onPull={(n: string) => { pullModel(n); playSound('click'); }}
-              isActive={activeModel.includes('30b')}
+              isActive={activeModel === 'qwen3-coder:30b'}
+            />
+            <QuickModelBtn
+              label="14B Reasoner"
+              name="deepseek-r1:14b"
+              isAvailable={models.find(m => m.name === 'deepseek-r1:14b')?.installed}
+              onSelect={(n: string) => { setActiveModel(n); playSound('click'); }}
+              onPull={(n: string) => { pullModel(n); playSound('click'); }}
+              isActive={activeModel === 'deepseek-r1:14b'}
+            />
+            <QuickModelBtn
+              label="12B Vision"
+              name="gemma3:12b"
+              isAvailable={models.find(m => m.name === 'gemma3:12b')?.installed}
+              onSelect={(n: string) => { setActiveModel(n); playSound('click'); }}
+              onPull={(n: string) => { pullModel(n); playSound('click'); }}
+              isActive={activeModel === 'gemma3:12b'}
             />
           </div>
           {/* Context & Project controls moved here to keep the model bar compact */}
@@ -356,7 +469,14 @@ export default function AssistantView() {
             {/* Context selector */}
             <div style={{ position: 'relative' }}>
               <button
-                onClick={() => { setShowContextPicker(v => !v); playSound('hover') }}
+                ref={contextBtnRef}
+                onClick={() => {
+                  if (!showContextPicker && contextBtnRef.current) {
+                    const r = contextBtnRef.current.getBoundingClientRect()
+                    setContextPickerPos({ top: r.bottom + 6, left: r.left })
+                  }
+                  setShowContextPicker(v => !v); playSound('hover')
+                }}
                 title="Context injected with each message"
                 style={{
                   display: 'flex', alignItems: 'center', gap: '5px', padding: '3px 8px', borderRadius: '6px',
@@ -369,14 +489,17 @@ export default function AssistantView() {
                 <Layers size={9} />
                 <span>Context ({[contextFlags.rag && !!project, contextFlags.terminal].filter(Boolean).length})</span>
               </button>
-              {showContextPicker && (
+              {showContextPicker && createPortal((
                 <div
                   className="context-picker-container"
                   style={{
-                    position: 'absolute', top: '130%', left: 0, zIndex: 100,
+                    // Portal to body avoids ancestors with backdrop-filter (which create a containing
+                    // block for fixed positioning and would otherwise push this off-screen).
+                    position: 'fixed',
+                    top: contextPickerPos.top, left: contextPickerPos.left, zIndex: 9999,
                     background: '#0d0e11', border: '1px solid rgba(168,85,247,0.4)', borderRadius: '12px',
                     padding: '14px', minWidth: '240px', boxShadow: '0 8px 48px rgba(0,0,0,0.8)',
-                    maxHeight: '300px', overflowY: 'auto'
+                    maxHeight: '60vh', overflowY: 'auto'
                   }}
                 >
                   <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '12px' }}>
@@ -401,7 +524,7 @@ export default function AssistantView() {
                     </div>
                   ))}
                 </div>
-              )}
+              ), document.body)}
             </div>
             <button
                onClick={() => { handleSelectProject(); playSound('click'); }}
@@ -446,11 +569,13 @@ export default function AssistantView() {
               onChange={(e) => { setActiveModel(e.target.value); playSound('click'); }}
               style={{ background: 'transparent', color: '#f4f4f5', fontSize: '11px', fontWeight: 'bold', border: 'none', outline: 'none', cursor: 'pointer', fontFamily: 'monospace' }}
             >
-              {models.map(m => (
-                <option key={m.name} value={m.name} style={{ background: '#0d0e11', color: '#f4f4f5' }}>
-                  {m.label || m.name.split(':')[0]}
-                </option>
-              ))}
+              {models
+                .filter(m => !/embed|embedding|bge-|all-minilm/i.test(m.name))
+                .map(m => (
+                  <option key={m.name} value={m.name} style={{ background: '#0d0e11', color: '#f4f4f5' }}>
+                    {m.label || m.name.split(':')[0]}
+                  </option>
+                ))}
             </select>
             <button
               onClick={() => { setSmartRoute(!smartRoute); playSound('click'); }}
@@ -499,6 +624,20 @@ export default function AssistantView() {
               <Network size={9} />
               <span>Orchestra</span>
             </button>
+            <button
+              onClick={() => { setThinkMode(!thinkMode); playSound('click'); }}
+              title="Think Deep: Qwen3 enters extended reasoning mode (/think). DeepSeek-R1 always thinks regardless."
+              style={{
+                display: 'flex', alignItems: 'center', gap: '5px', padding: '3px 8px', borderRadius: '6px',
+                background: thinkMode ? 'rgba(168,85,247,0.1)' : 'rgba(255,255,255,0.02)',
+                border: `1px solid ${thinkMode ? 'rgba(168,85,247,0.3)' : 'rgba(255,255,255,0.06)'}`,
+                color: thinkMode ? '#a855f7' : '#52525b', fontSize: '9px', fontFamily: 'monospace',
+                textTransform: 'uppercase', cursor: 'pointer',
+              }}
+            >
+              <Brain size={9} />
+              <span>Think</span>
+            </button>
           </div>
           
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
@@ -507,7 +646,7 @@ export default function AssistantView() {
                disabled={isStreaming || isDiagnosing}
                style={{
                  display: 'flex', alignItems: 'center', gap: '6px', padding: '4px 8px', borderRadius: '6px',
-                 background: 'rgba(239,68,68,0.05)', border: '1px solid rgba(239,68,68,0.1)',
+                 background: 'var(--crimson-05)', border: '1px solid var(--crimson-10)',
                  color: 'var(--crimson)', fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase',
                  cursor: (isStreaming || isDiagnosing) ? 'default' : 'pointer', opacity: (isStreaming || isDiagnosing) ? 0.5 : 1
                }}
@@ -554,7 +693,7 @@ export default function AssistantView() {
       <div
         ref={scrollRef}
         className="v-assistant-messages"
-        style={{ height: 'calc(100vh - 440px)', overflowY: 'auto', marginBottom: '24px', paddingRight: '16px', display: 'flex', flexDirection: 'column', gap: '24px' }}
+        style={{ flex: 1, minHeight: 0, overflowY: 'auto', marginBottom: '24px', paddingRight: '16px', display: 'flex', flexDirection: 'column', gap: '24px' }}
       >
         <AnimatePresence initial={false}>
           {messages.length === 0 && (
@@ -589,7 +728,7 @@ export default function AssistantView() {
                       color: '#71717a', cursor: isStreaming ? 'default' : 'pointer',
                       transition: 'all 0.15s', letterSpacing: '0.02em',
                     }}
-                    onMouseEnter={e => { if (!isStreaming) { (e.target as HTMLElement).style.borderColor = 'rgba(239,68,68,0.3)'; (e.target as HTMLElement).style.color = '#f4f4f5'; (e.target as HTMLElement).style.background = 'rgba(239,68,68,0.06)' } }}
+                    onMouseEnter={e => { if (!isStreaming) { (e.target as HTMLElement).style.borderColor = 'var(--crimson-30)'; (e.target as HTMLElement).style.color = '#f4f4f5'; (e.target as HTMLElement).style.background = 'var(--crimson-06)' } }}
                     onMouseLeave={e => { (e.target as HTMLElement).style.borderColor = 'rgba(255,255,255,0.08)'; (e.target as HTMLElement).style.color = '#71717a'; (e.target as HTMLElement).style.background = 'rgba(255,255,255,0.03)' }}
                   >
                     {chip.label}
@@ -636,20 +775,20 @@ export default function AssistantView() {
                   )}
                   <div style={{
                     width: '32px', height: '32px', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: '4px',
-                    background: msg.role === 'user' ? 'rgba(255,255,255,0.05)' : 'rgba(239,68,68,0.1)',
-                    border: `1px solid ${msg.role === 'user' ? 'rgba(255,255,255,0.1)' : 'rgba(239,68,68,0.2)'}`
+                    background: msg.role === 'user' ? 'rgba(255,255,255,0.05)' : 'var(--crimson-10)',
+                    border: `1px solid ${msg.role === 'user' ? 'rgba(255,255,255,0.1)' : 'var(--crimson-20)'}`
                   }}>
                     {msg.role === 'user' ? <User size={16} style={{ color: '#a1a1aa' }} /> : <Bot size={16} style={{ color: 'var(--crimson)' }} />}
                   </div>
                   <div style={{
                     borderRadius: '16px', padding: '16px 24px', fontSize: '14px', lineHeight: '1.6',
                     background: msg.role === 'user' ? 'rgba(255,255,255,0.03)' : 'rgba(13,14,17,0.7)',
-                    border: `1px solid ${msg.role === 'user' ? 'rgba(255,255,255,0.05)' : 'rgba(239,68,68,0.1)'}`,
+                    border: `1px solid ${msg.role === 'user' ? 'rgba(255,255,255,0.05)' : 'var(--crimson-10)'}`,
                     color: msg.role === 'user' ? '#e4e4e7' : '#d4d4d8',
                     backdropFilter: 'blur(12px)',
                     overflow: 'hidden'
                   }}>
-                    <MessageContent content={msg.content} />
+                    <MessageContent content={msg.content} isStreaming={isStreamingThis} />
                     {msg.images && msg.images.length > 0 && (
                       <div style={{ marginTop: '12px', display: 'flex', flexWrap: 'wrap', gap: '8px' }}>
                         {msg.images.map((img: string, idx: number) => (
@@ -673,7 +812,7 @@ export default function AssistantView() {
             <motion.div
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
-              style={{ display: 'flex', flexDirection: 'column', gap: '6px', color: 'var(--crimson)', background: 'rgba(239,68,68,0.1)', border: '1px solid rgba(239,68,68,0.2)', padding: '16px', borderRadius: '16px' }}
+              style={{ display: 'flex', flexDirection: 'column', gap: '6px', color: 'var(--crimson)', background: 'var(--crimson-10)', border: '1px solid var(--crimson-20)', padding: '16px', borderRadius: '16px' }}
             >
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <AlertCircle size={20} />
@@ -693,7 +832,7 @@ export default function AssistantView() {
 
       {/* Input Area */}
       <div className="v-card" style={{ padding: '16px', borderRadius: '24px', position: 'relative' }}>
-        <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '1px', background: 'linear-gradient(to right, transparent, rgba(239,68,68,0.3), transparent)' }} />
+        <div style={{ position: 'absolute', top: 0, left: 0, width: '100%', height: '1px', background: 'linear-gradient(to right, transparent, var(--crimson-30), transparent)' }} />
         {tokenUsage && (
           <div style={{ marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '10px' }}>
             <span style={{ fontSize: '8px', fontFamily: 'monospace', color: '#3f3f46', textTransform: 'uppercase', letterSpacing: '0.1em', flexShrink: 0 }}>Context</span>
@@ -732,6 +871,37 @@ export default function AssistantView() {
           >
             <Paperclip size={16} />
           </button>
+          <button
+            onClick={() => { isRecording ? stopRecording() : startRecording(); playSound('click') }}
+            title={isRecording ? 'Stop & transcribe' : 'Speak (whisper.cpp)'}
+            disabled={isTranscribing}
+            style={{
+              padding: '8px', borderRadius: '10px',
+              border: `1px solid ${isRecording ? 'rgba(239,68,68,0.4)' : 'rgba(255,255,255,0.06)'}`,
+              background: isRecording ? 'rgba(239,68,68,0.12)' : 'rgba(255,255,255,0.02)',
+              color: isRecording ? '#f87171' : '#52525b',
+              cursor: isTranscribing ? 'wait' : 'pointer',
+              flexShrink: 0, display: 'flex', alignItems: 'center', transition: 'all 0.15s'
+            }}
+          >
+            {isTranscribing ? <Loader2 size={16} className="animate-spin" /> : isRecording ? <MicOff size={16} /> : <Mic size={16} />}
+          </button>
+          <button
+            onClick={() => {
+              if (isSpeaking) { stopSpeech(); playSound('click'); return }
+              setTtsEnabled(v => !v); playSound('click')
+            }}
+            title={isSpeaking ? 'Stop speech' : ttsEnabled ? 'TTS on (Piper) — click to disable' : 'TTS off — click to enable'}
+            style={{
+              padding: '8px', borderRadius: '10px',
+              border: `1px solid ${isSpeaking ? 'rgba(244,63,94,0.4)' : ttsEnabled ? 'rgba(168,85,247,0.3)' : 'rgba(255,255,255,0.06)'}`,
+              background: isSpeaking ? 'rgba(244,63,94,0.12)' : ttsEnabled ? 'rgba(168,85,247,0.1)' : 'rgba(255,255,255,0.02)',
+              color: isSpeaking ? '#fb7185' : ttsEnabled ? '#a855f7' : '#52525b',
+              cursor: 'pointer', flexShrink: 0, display: 'flex', alignItems: 'center', transition: 'all 0.15s'
+            }}
+          >
+            {isSpeaking ? <Square size={16} fill="currentColor" /> : ttsEnabled ? <Volume2 size={16} /> : <VolumeX size={16} />}
+          </button>
           <textarea
             ref={inputRef}
             value={input}
@@ -749,9 +919,9 @@ export default function AssistantView() {
             <button
               onClick={() => { cancelStream(); playSound('click'); }}
               style={{
-                padding: '12px', borderRadius: '16px', border: '1px solid rgba(239,68,68,0.4)', cursor: 'pointer',
-                background: 'rgba(239,68,68,0.12)', color: 'var(--crimson)', transition: 'all 0.2s',
-                boxShadow: '0 0 12px rgba(239,68,68,0.2)', flexShrink: 0,
+                padding: '12px', borderRadius: '16px', border: '1px solid var(--crimson-40)', cursor: 'pointer',
+                background: 'var(--crimson-12)', color: 'var(--crimson)', transition: 'all 0.2s',
+                boxShadow: '0 0 12px var(--crimson-20)', flexShrink: 0,
               }}
               title="Stop generation"
             >
@@ -766,7 +936,7 @@ export default function AssistantView() {
                 transition: 'all 0.2s', flexShrink: 0,
                 background: input.trim() ? 'var(--crimson)' : '#27272a',
                 color: input.trim() ? 'white' : '#52525b',
-                boxShadow: input.trim() ? '0 0 15px rgba(239,68,68,0.4)' : 'none',
+                boxShadow: input.trim() ? '0 0 15px var(--crimson-40)' : 'none',
               }}
             >
               <Send size={20} />
@@ -785,7 +955,7 @@ function QuickModelBtn({ label, name, isAvailable, onSelect, onPull, isActive }:
       onClick={() => isAvailable ? onSelect(name) : onPull(name)}
       style={{
         padding: '10px', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)',
-        background: isActive ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.02)',
+        background: isActive ? 'var(--crimson-10)' : 'rgba(255,255,255,0.02)',
         cursor: 'pointer', transition: 'all 0.2s', display: 'flex', flexDirection: 'column', gap: '4px',
         borderColor: isActive ? 'var(--crimson)' : 'rgba(255,255,255,0.05)',
         textAlign: 'left'
@@ -891,18 +1061,72 @@ function OrchestraAgentCard({ agentId, role, status, output }: { agentId: number
   )
 }
 
-function MessageContent({ content }: { content: string }) {
+function ThinkBlock({ content, streaming }: { content: string; streaming: boolean }) {
+  const [open, setOpen] = useState(false)
+  return (
+    <div style={{ margin: '0 0 10px', borderRadius: '8px', border: '1px solid rgba(168,85,247,0.25)', background: 'rgba(168,85,247,0.04)' }}>
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{ padding: '6px 10px', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px', fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.15em', color: '#a855f7' }}
+      >
+        <Brain size={10} />
+        <span>{streaming ? 'Thinking…' : 'Thought'}</span>
+        {open ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
+      </div>
+      {open && (
+        <div style={{ padding: '8px 12px', borderTop: '1px solid rgba(168,85,247,0.15)', maxHeight: '240px', overflowY: 'auto' }}>
+          <pre style={{ margin: 0, fontSize: '11px', fontFamily: 'monospace', color: '#a1a1aa', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{content.trim()}</pre>
+        </div>
+      )}
+    </div>
+  )
+}
+
+const MessageContent = memo(function MessageContent({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
   if (!content) return null
+  // Extract <think>...</think> blocks (Qwen3, DeepSeek-R1 reasoning traces).
+  // Handle unclosed block during streaming.
+  const thinkParts: string[] = []
+  let rest = content
+  rest = rest.replace(/<think>([\s\S]*?)<\/think>/g, (_, body) => { thinkParts.push(body); return '' })
+  // Unclosed trailing block while streaming
+  const openIdx = rest.indexOf('<think>')
+  let streamingThink: string | null = null
+  if (openIdx !== -1) {
+    streamingThink = rest.slice(openIdx + '<think>'.length)
+    rest = rest.slice(0, openIdx)
+  }
+  return (
+    <>
+      {thinkParts.map((t, i) => <ThinkBlock key={`tp-${i}`} content={t} streaming={false} />)}
+      {streamingThink !== null && <ThinkBlock content={streamingThink} streaming={true} />}
+      {rest && <MessageMarkdown content={rest} isStreaming={isStreaming} />}
+    </>
+  )
+})
+
+// Reasoning models (DeepSeek-R1, Qwen3 /think) emit LaTeX bracket delimiters \[...\] and \(...\),
+// but CommonMark escape rules strip the backslash before remark-math runs. Convert to the
+// dollar-delimiter form remark-math actually parses.
+function normaliseMathDelimiters(src: string): string {
+  return src
+    .replace(/\\\[([\s\S]*?)\\\]/g, (_, m) => `\n$$\n${m.trim()}\n$$\n`)
+    .replace(/\\\(([\s\S]*?)\\\)/g, (_, m) => `$${m.trim()}$`)
+}
+
+const MessageMarkdown = memo(function MessageMarkdown({ content, isStreaming }: { content: string; isStreaming?: boolean }) {
+  const prepared = useMemo(() => normaliseMathDelimiters(content), [content])
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm]}
+      remarkPlugins={[remarkGfm, remarkMath]}
+      rehypePlugins={[rehypeKatex]}
       components={{
         // Code blocks → ArtifactView
         code({ node, className, children, ...props }: any) {
           const isBlock = !props.inline
           const lang = (className ?? '').replace('language-', '')
           if (isBlock) {
-            return <ArtifactView code={String(children).replace(/\n$/, '')} language={lang || 'text'} />
+            return <ArtifactView code={String(children).replace(/\n$/, '')} language={lang || 'text'} isStreaming={isStreaming} />
           }
           return (
             <code style={{ background: 'rgba(255,255,255,0.1)', padding: '2px 6px', borderRadius: '4px', color: 'var(--crimson)', fontFamily: 'monospace', fontSize: '0.875em' }}>
@@ -914,7 +1138,7 @@ function MessageContent({ content }: { content: string }) {
           return <p style={{ margin: '0 0 8px', lineHeight: 1.7, whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{children}</p>
         },
         h1({ children }: any) {
-          return <h1 style={{ fontSize: '16px', fontWeight: 'bold', color: 'var(--crimson)', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.1em', margin: '16px 0 8px', borderBottom: '1px solid rgba(239,68,68,0.2)', paddingBottom: '6px' }}>{children}</h1>
+          return <h1 style={{ fontSize: '16px', fontWeight: 'bold', color: 'var(--crimson)', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.1em', margin: '16px 0 8px', borderBottom: '1px solid var(--crimson-20)', paddingBottom: '6px' }}>{children}</h1>
         },
         h2({ children }: any) {
           return <h2 style={{ fontSize: '14px', fontWeight: 'bold', color: '#f4f4f5', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.08em', margin: '14px 0 6px' }}>{children}</h2>
@@ -942,7 +1166,7 @@ function MessageContent({ content }: { content: string }) {
           )
         },
         th({ children }: any) {
-          return <th style={{ padding: '6px 12px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(255,255,255,0.07)', color: 'var(--crimson)', textAlign: 'left', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{children}</th>
+          return <th style={{ padding: '6px 12px', background: 'var(--crimson-08)', border: '1px solid rgba(255,255,255,0.07)', color: 'var(--crimson)', textAlign: 'left', fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.05em' }}>{children}</th>
         },
         td({ children }: any) {
           return <td style={{ padding: '6px 12px', border: '1px solid rgba(255,255,255,0.05)', color: '#d4d4d8' }}>{children}</td>
@@ -958,7 +1182,7 @@ function MessageContent({ content }: { content: string }) {
         },
       }}
     >
-      {content}
+      {prepared}
     </ReactMarkdown>
   )
-}
+})

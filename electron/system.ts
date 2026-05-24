@@ -1,7 +1,7 @@
 import { ipcMain, dialog } from 'electron'
 import { exec, spawn } from 'child_process'
 import { promisify } from 'util'
-import { readFileSync, readdirSync, existsSync, unlinkSync, statSync, writeFileSync } from 'fs'
+import { readFileSync, readdirSync, existsSync, unlinkSync, statSync, writeFileSync, mkdirSync } from 'fs'
 import { join, extname, resolve } from 'path'
 import { homedir, tmpdir } from 'os'
 import axios from 'axios'
@@ -61,6 +61,93 @@ export function setupSystemHandlers(win: any) {
       await execPromise(`ionice -c 3 -n 7 mv "${tmpPath}" "${targetPath}"`)
 
       return { success: true, path: targetPath }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  // Speech-to-text via local whisper.cpp. Accepts base64 audio (any format ffmpeg can
+  // decode — WebM/Opus from MediaRecorder is the common case), converts to 16 kHz mono
+  // WAV, then runs whisper-cli. Falls back gracefully when whisper isn't installed.
+  ipcMain.handle('voice-transcribe', async (_, { audioBase64, mimeType }: { audioBase64: string; mimeType?: string }) => {
+    const whisperBin = `${homedir()}/whisper.cpp/build/bin/whisper-cli`
+    const modelPath = `${homedir()}/whisper.cpp/models/ggml-base.en.bin`
+    if (!existsSync(whisperBin) || !existsSync(modelPath)) {
+      return { success: false, error: 'whisper.cpp not built. See README for setup.' }
+    }
+    const stamp = Date.now()
+    const inPath = `${tmpdir()}/vortex-stt-${stamp}.${mimeType?.includes('webm') ? 'webm' : 'audio'}`
+    const wavPath = `${tmpdir()}/vortex-stt-${stamp}.wav`
+    try {
+      writeFileSync(inPath, Buffer.from(audioBase64, 'base64'))
+      await execPromise(`ffmpeg -y -i "${inPath}" -ar 16000 -ac 1 -c:a pcm_s16le "${wavPath}"`, { timeout: 20000 })
+      const { stdout } = await execPromise(`"${whisperBin}" -m "${modelPath}" -f "${wavPath}" -nt -np 2>/dev/null`, { timeout: 60000 })
+      try { unlinkSync(inPath); unlinkSync(wavPath) } catch {}
+      return { success: true, text: stdout.trim() }
+    } catch (e: any) {
+      try { unlinkSync(inPath); unlinkSync(wavPath) } catch {}
+      return { success: false, error: e.message }
+    }
+  })
+
+  // Text-to-speech via Piper. Returns base64 WAV the renderer plays via Audio().
+  // Piper is optional; if not installed the renderer silently skips TTS.
+  ipcMain.handle('voice-speak', async (_, { text }: { text: string }) => {
+    const voiceModel = `${homedir()}/.local/share/piper-voices/en_US-amy-medium.onnx`
+    try {
+      // Verify piper-tts exists in PATH (Arch piper-tts-bin installs as `piper-tts`, not `piper`).
+      await execPromise(`which piper-tts`, { timeout: 2000 })
+    } catch {
+      return { success: false, error: 'piper-tts not installed' }
+    }
+    if (!existsSync(voiceModel)) {
+      return { success: false, error: `Voice model not found at ${voiceModel}` }
+    }
+    const wavPath = `${tmpdir()}/vortex-tts-${Date.now()}.wav`
+    try {
+      const safe = text.replace(/'/g, "'\\''")
+      await execPromise(`echo '${safe}' | piper-tts --model "${voiceModel}" --output_file "${wavPath}"`, { timeout: 30000 })
+      const buf = readFileSync(wavPath)
+      try { unlinkSync(wavPath) } catch {}
+      return { success: true, audioBase64: buf.toString('base64') }
+    } catch (e: any) {
+      try { unlinkSync(wavPath) } catch {}
+      return { success: false, error: e.message }
+    }
+  })
+
+  // Convert HEIC/HEIF (and other unsupported formats) to JPEG so the renderer can
+  // display them. Browsers don't decode HEIC natively. heif-convert from libheif
+  // handles iPhone HEIC files; ImageMagick is a fallback for other oddball formats.
+  ipcMain.handle('system-convert-heic', async (_, { base64, ext }: { base64: string; ext: string }) => {
+    try {
+      const stamp = Date.now()
+      const inPath = `${tmpdir()}/vortex-heic-${stamp}.${ext || 'heic'}`
+      const outPath = `${tmpdir()}/vortex-heic-${stamp}.jpg`
+      writeFileSync(inPath, Buffer.from(base64, 'base64'))
+      try {
+        await execPromise(`heif-convert -q 92 "${inPath}" "${outPath}"`, { timeout: 20000 })
+      } catch {
+        // Fallback to ImageMagick for AVIF/TIFF/etc.
+        await execPromise(`magick "${inPath}" -quality 92 "${outPath}"`, { timeout: 20000 })
+      }
+      const buf = readFileSync(outPath)
+      try { unlinkSync(inPath); unlinkSync(outPath) } catch {}
+      return { success: true, dataUrl: `data:image/jpeg;base64,${buf.toString('base64')}` }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('system-read-text-file', async (_, filePath: string) => {
+    try {
+      const cleanPath = filePath.replace(/^~/, homedir())
+      const content = readFileSync(cleanPath, 'utf-8')
+      // Cap at 1MB to avoid blowing up the renderer with huge files.
+      if (content.length > 1_000_000) {
+        return { success: false, error: 'File too large to diff (>1MB)' }
+      }
+      return { success: true, content }
     } catch (e: any) {
       return { success: false, error: e.message }
     }
@@ -131,7 +218,7 @@ export function setupSystemHandlers(win: any) {
 
   ipcMain.handle('system-upgrade', async () => {
     // 2026 Best Practice: Auto-snapshot before full system upgrade
-    try { await execPromise('pkexec snapper -c root create -t pre -p -d "Vortex system upgrade"') } catch {}
+    try { await execPromise('pkexec snapper --no-dbus -c root create -t pre -p -d "Vortex system upgrade"') } catch {}
 
     const helper = await detectAurHelper()
     streamLog(`> Starting system upgrade via ${helper}...`)
@@ -150,7 +237,7 @@ export function setupSystemHandlers(win: any) {
 
   ipcMain.handle('ai-update-components', async () => {
     // Auto-snapshot before AI stack update
-    try { await execPromise('pkexec snapper -c root create -t pre -p -d "Vortex AI update"') } catch {}
+    try { await execPromise('pkexec snapper --no-dbus -c root create -t pre -p -d "Vortex AI update"') } catch {}
 
     streamLog('> Initializing AI Component synchronization...')
 
@@ -627,8 +714,8 @@ export function setupSystemHandlers(win: any) {
       if (opts.lines)    args.push('-n', String(opts.lines))
       if (opts.keyword)  args.push(`-g`, opts.keyword.replace(/['"]/g, ''))
       const { stdout } = await execPromise(args.join(' '))
-      return stdout.trim().split('\n').filter(Boolean)
-    } catch { return [] }
+      return { success: true, lines: stdout.trim().split('\n').filter(Boolean) }
+    } catch (e: any) { return { success: false, error: e.message, lines: [] } }
   })
 
   // ── Startup apps manager ──────────────────────────────────────────────────
@@ -702,6 +789,23 @@ export function setupSystemHandlers(win: any) {
       const safe = unit.replace(/[^a-zA-Z0-9@._-]/g, '')
       await execPromise(`systemctl --user ${enable ? 'enable' : 'disable'} ${safe}`)
       return { success: true }
+    } catch (e: any) {
+      return { success: false, error: e.message }
+    }
+  })
+
+  ipcMain.handle('startup-add-desktop', async (_, { name, exec: execCmd, comment }: { name: string; exec: string; comment?: string }) => {
+    try {
+      if (!name.trim() || !execCmd.trim()) return { success: false, error: 'Name and Exec are required' }
+      const autostartDir = join(homedir(), '.config', 'autostart')
+      if (!existsSync(autostartDir)) mkdirSync(autostartDir, { recursive: true })
+      const filename = name.trim().replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase() + '.desktop'
+      const filePath = join(autostartDir, filename)
+      const lines = ['[Desktop Entry]', 'Type=Application', `Name=${name.trim()}`, `Exec=${execCmd.trim()}`]
+      if (comment?.trim()) lines.push(`Comment=${comment.trim()}`)
+      lines.push('X-GNOME-Autostart-enabled=true', '')
+      writeFileSync(filePath, lines.join('\n'), 'utf8')
+      return { success: true, path: filePath }
     } catch (e: any) {
       return { success: false, error: e.message }
     }
@@ -1018,7 +1122,7 @@ export function setupSystemHandlers(win: any) {
   ipcMain.handle('system-snapper-snapshot', async (_, desc?: string) => {
     const description = desc || 'Vortex pre-change snapshot'
     try {
-      const { stdout } = await execPromise(`pkexec snapper -c root create -t pre -p -d "${description}"`)
+      const { stdout } = await execPromise(`pkexec snapper --no-dbus -c root create -t pre -p -d "${description}"`)
       return { success: true, output: `Snapshot created: ${stdout.trim()}` }
     } catch (e: any) {
       return { success: false, error: e.message }
@@ -1027,8 +1131,12 @@ export function setupSystemHandlers(win: any) {
 
   ipcMain.handle('system-snapper-list', async () => {
     try {
-      const { stdout } = await execPromise('snapper -c root list --columns number,type,date,description,used-space --separator "|"')
-      const rows = stdout.trim().split('\n').filter(Boolean).map(line => {
+      const { stdout } = await execPromise('pkexec snapper --no-dbus --csvout --separator "|" -c root list --columns number,type,date,description,used-space')
+      const lines = stdout.trim().split('\n').filter(Boolean)
+      // Skip header if present
+      if (lines[0]?.startsWith('number|')) lines.shift()
+      
+      const rows = lines.map(line => {
         const parts = line.split('|')
         return {
           id:          (parts[0] ?? '').trim(),
@@ -1047,7 +1155,7 @@ export function setupSystemHandlers(win: any) {
   ipcMain.handle('system-snapper-create', async (_, { description }: { description: string }) => {
     const safe = description.replace(/"/g, "'")
     try {
-      const { stdout } = await execPromise(`pkexec snapper -c root create -t single -d "${safe}"`)
+      const { stdout } = await execPromise(`pkexec snapper --no-dbus -c root create -t single -d "${safe}"`)
       return { success: true, id: stdout.trim() }
     } catch (e: any) {
       return { success: false, error: e.message }
@@ -1057,7 +1165,7 @@ export function setupSystemHandlers(win: any) {
   ipcMain.handle('system-snapper-delete', async (_, { id }: { id: string }) => {
     if (!/^\d+$/.test(id)) return { success: false, error: 'Invalid snapshot ID' }
     try {
-      await execPromise(`pkexec snapper -c root delete ${id}`)
+      await execPromise(`pkexec snapper --no-dbus -c root delete ${id}`)
       return { success: true }
     } catch (e: any) {
       return { success: false, error: e.message }
@@ -1068,7 +1176,7 @@ export function setupSystemHandlers(win: any) {
     if (!/^\d+$/.test(id)) return { success: false, error: 'Invalid snapshot ID' }
     try {
       // Creates a new snapshot of current state, sets target as default subvol for next boot
-      const { stdout, stderr } = await execPromise(`pkexec snapper rollback ${id}`)
+      const { stdout, stderr } = await execPromise(`pkexec snapper --no-dbus rollback ${id}`)
       return { success: true, output: (stdout + stderr).trim() }
     } catch (e: any) {
       return { success: false, error: e.message }
@@ -1273,7 +1381,7 @@ export function setupSystemHandlers(win: any) {
       if (tests.includes('cpu')) {
         try {
           const t0 = Date.now()
-          await execPromise(`bash -c "n=0; for i in $(seq 1 50000); do n=$((n+i)); done; echo $n"`)
+          await execPromise(`bash -c "n=0; for ((i=1; i<=50000; i++)); do n=$((n+i)); done; echo $n"`)
           const ms = Date.now() - t0
           const score = Math.round(1000 / (ms / 1000) * 10) / 10
           results.cpu = { score, unit: 'ops/s (higher=better)', detail: `50k iterations in ${ms}ms` }
@@ -1281,7 +1389,7 @@ export function setupSystemHandlers(win: any) {
       }
       if (tests.includes('disk_write')) {
         try {
-          const tmpFile = `${tmpdir()}/vortex_bench_$$`
+          const tmpFile = `${tmpdir()}/vortex_bench_write_tmp`
           const t0 = Date.now()
           await execPromise(`dd if=/dev/zero of="${tmpFile}" bs=1M count=256 conv=fdatasync 2>&1`)
           const ms = Date.now() - t0
@@ -1292,7 +1400,7 @@ export function setupSystemHandlers(win: any) {
       }
       if (tests.includes('disk_read')) {
         try {
-          const tmpFile = `${tmpdir()}/vortex_bench_read_$$`
+          const tmpFile = `${tmpdir()}/vortex_bench_read_tmp`
           await execPromise(`dd if=/dev/urandom of="${tmpFile}" bs=1M count=256 conv=fdatasync 2>/dev/null`)
           const t0 = Date.now()
           await execPromise(`dd if="${tmpFile}" of=/dev/null bs=1M 2>&1`)
@@ -1319,7 +1427,7 @@ export function setupSystemHandlers(win: any) {
   // UFW Firewall
   ipcMain.handle('ufw-status', async () => {
     try {
-      const { stdout } = await execPromise('sudo ufw status verbose 2>/dev/null || ufw status verbose 2>/dev/null || echo "ufw not available"')
+      const { stdout } = await execPromise('pkexec ufw status verbose')
       const lines = stdout.split('\n')
       const statusLine = lines.find(l => l.toLowerCase().startsWith('status:'))
       const enabled = statusLine?.toLowerCase().includes('active') ?? false

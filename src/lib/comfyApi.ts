@@ -2,15 +2,37 @@ export const COMFY_URL = "http://127.0.0.1:8188";
 
 export type LoraEntry = { name: string; modelStr: number; clipStr: number }
 
+export async function cancelGeneration(): Promise<void> {
+  try {
+    await fetch(`${COMFY_URL}/interrupt`, { method: 'POST' })
+  } catch { /* ComfyUI may not be running */ }
+}
+
+// Models from both the merged-checkpoints list and the standalone UNet (diffusion_models)
+// list are returned. UNet-only entries are flagged with a `unet::` prefix so the workflow
+// builder knows to route them through the split-file FLUX path (UNETLoader + DualCLIPLoader
+// + VAELoader) instead of the regular CheckpointLoaderSimple.
 export async function getModels(): Promise<string[]> {
   try {
     const resp = await fetch(`${COMFY_URL}/object_info`);
     const data = await resp.json();
-    return data.CheckpointLoaderSimple.input.required.ckpt_name[0];
+    const checkpoints: string[] = data.CheckpointLoaderSimple?.input?.required?.ckpt_name?.[0] ?? [];
+    const unets: string[] = data.UNETLoader?.input?.required?.unet_name?.[0] ?? [];
+    const taggedUnets = unets.map(n => `unet::${n}`);
+    return [...checkpoints, ...taggedUnets];
   } catch (e) {
     console.error("Failed to fetch ComfyUI models:", e);
     return [];
   }
+}
+
+// True when the model selection is a standalone diffusion model (UNet only).
+// The split-file FLUX workflow (Krea-dev, etc.) needs separate CLIP + VAE loaders.
+export function isUnetModel(modelName: string): boolean {
+  return modelName.startsWith('unet::');
+}
+export function stripUnetTag(modelName: string): string {
+  return modelName.startsWith('unet::') ? modelName.slice('unet::'.length) : modelName;
 }
 
 export async function getLoraNames(): Promise<string[]> {
@@ -116,7 +138,8 @@ export function createWorkflow(
   cfg = 7,
   sampler = 'dpmpp_2m',
   scheduler = 'karras',
-  loras: LoraEntry[] = []
+  loras: LoraEntry[] = [],
+  useFaceDetailer = false,
 ) {
   const workflow: any = {
     "3": {
@@ -140,6 +163,36 @@ export function createWorkflow(
     workflow["6"].inputs.clip = clipRef;
     workflow["7"].inputs.clip = clipRef;
   }
+  if (useFaceDetailer) {
+    workflow["20"] = { "inputs": { "model_name": "bbox/face_yolov8m.pt" }, "class_type": "UltralyticsDetectorProvider" };
+    workflow["21"] = {
+      "inputs": {
+        "guide_size": 384, "guide_size_for": true, "max_size": 1024,
+        "seed": Math.floor(Math.random() * 1_000_000_000), "steps": 20, "cfg": 8,
+        "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 0.4,
+        "feather": 5, "noise_mask": true, "force_inpaint": true,
+        "bbox_threshold": 0.5, "bbox_dilation": 10, "bbox_crop_factor": 3,
+        "drop_size": 10, "cycle": 1,
+        // SAM fields are required by the Impact Pack FaceDetailer node schema. We're
+        // not using a SAM model (only bbox), so these get neutral defaults that disable
+        // SAM-based segmentation.
+        "sam_detection_hint": "center-1",
+        "sam_dilation": 0,
+        "sam_threshold": 0.93,
+        "sam_bbox_expansion": 0,
+        "sam_mask_hint_threshold": 0.7,
+        "sam_mask_hint_use_negative": "False",
+        "wildcard": "",
+        "image": ["8", 0],
+        "model": workflow["3"].inputs.model,
+        "clip": workflow["6"].inputs.clip,
+        "vae": ["4", 2],
+        "positive": ["6", 0], "negative": ["7", 0], "bbox_detector": ["20", 0]
+      },
+      "class_type": "FaceDetailer"
+    };
+    workflow["9"].inputs.images = ["21", 0];
+  }
   return workflow;
 }
 
@@ -150,6 +203,11 @@ export function createFluxWorkflow(
   height = 1024,
   seed = -1
 ) {
+  // If the model is a UNet-only file (split FLUX setup like Krea-dev), build a
+  // multi-loader workflow with separate T5+CLIP-L and VAE.
+  if (isUnetModel(modelName)) {
+    return createFluxSplitWorkflow(stripUnetTag(modelName), prompt, width, height, seed)
+  }
   return {
     "3": {
       "inputs": {
@@ -166,6 +224,210 @@ export function createFluxWorkflow(
     "8": { "inputs": { "samples": ["3", 0], "vae": ["4", 2] }, "class_type": "VAEDecode" },
     "9": { "inputs": { "filename_prefix": "VortexFlux", "images": ["8", 0] }, "class_type": "SaveImage" }
   };
+}
+
+// FLUX-Krea-dev (and other split-file FLUX variants) — uses three separate loaders.
+// Expects t5xxl_fp16.safetensors + clip_l.safetensors in models/text_encoders/ and
+// ae.safetensors in models/vae/. Quality on this setup is comparable to the BFL
+// fp16 release while staying under 16GB VRAM via ComfyUI's automatic offload.
+export function createFluxSplitWorkflow(
+  unetName: string,
+  prompt: string,
+  width = 1024,
+  height = 1024,
+  seed = -1,
+  steps = 25,
+  guidance = 3.5,
+) {
+  return {
+    "1": { "inputs": { "unet_name": unetName, "weight_dtype": "default" }, "class_type": "UNETLoader" },
+    "2": {
+      "inputs": { "clip_name1": "t5xxl_fp16.safetensors", "clip_name2": "clip_l.safetensors", "type": "flux" },
+      "class_type": "DualCLIPLoader",
+    },
+    "3": { "inputs": { "vae_name": "ae.safetensors" }, "class_type": "VAELoader" },
+    "4": { "inputs": { "text": prompt, "clip": ["2", 0] }, "class_type": "CLIPTextEncode" },
+    "5": { "inputs": { "conditioning": ["4", 0], "guidance": guidance }, "class_type": "FluxGuidance" },
+    "6": { "inputs": { "text": "", "clip": ["2", 0] }, "class_type": "CLIPTextEncode" },
+    "7": { "inputs": { "width": width, "height": height, "batch_size": 1 }, "class_type": "EmptyLatentImage" },
+    "8": {
+      "inputs": {
+        "seed": resolveSeed(seed), "steps": steps, "cfg": 1.0,
+        "sampler_name": "euler", "scheduler": "simple", "denoise": 1,
+        "model": ["1", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["7", 0],
+      },
+      "class_type": "KSampler",
+    },
+    "9":  { "inputs": { "samples": ["8", 0], "vae": ["3", 0] }, "class_type": "VAEDecode" },
+    "10": { "inputs": { "filename_prefix": "VortexFluxKrea", "images": ["9", 0] }, "class_type": "SaveImage" },
+  }
+}
+
+// FLUX img2img — starts from a real reference image and denoises into your prompt.
+// At denoise 0.4-0.6 most of the source image structure + texture is preserved while
+// the prompt steers content and lighting. The best path to photoreal output: feed
+// it a real photo and let FLUX refine it. Routes to split or merged loader based on
+// whether the selected model is UNet-only (tagged `unet::`) or a merged checkpoint.
+// Output dimensions match the source image (latent comes from VAEEncode of LoadImage),
+// so we intentionally don't accept width/height — the source dictates them.
+export function createFluxImg2ImgWorkflow(
+  prompt: string,
+  modelName: string,
+  imageFilename: string,
+  denoiseStrength = 0.55,
+  seed = -1,
+  steps = 25,
+  guidance = 3.5,
+) {
+  if (isUnetModel(modelName)) {
+    const unetName = stripUnetTag(modelName)
+    return {
+      "1": { "inputs": { "unet_name": unetName, "weight_dtype": "default" }, "class_type": "UNETLoader" },
+      "2": { "inputs": { "clip_name1": "t5xxl_fp16.safetensors", "clip_name2": "clip_l.safetensors", "type": "flux" }, "class_type": "DualCLIPLoader" },
+      "3": { "inputs": { "vae_name": "ae.safetensors" }, "class_type": "VAELoader" },
+      "4": { "inputs": { "text": prompt, "clip": ["2", 0] }, "class_type": "CLIPTextEncode" },
+      "5": { "inputs": { "conditioning": ["4", 0], "guidance": guidance }, "class_type": "FluxGuidance" },
+      "6": { "inputs": { "text": "", "clip": ["2", 0] }, "class_type": "CLIPTextEncode" },
+      "7": { "inputs": { "image": imageFilename, "upload": "image" }, "class_type": "LoadImage" },
+      "8": { "inputs": { "pixels": ["7", 0], "vae": ["3", 0] }, "class_type": "VAEEncode" },
+      "9": {
+        "inputs": {
+          "seed": resolveSeed(seed), "steps": steps, "cfg": 1.0,
+          "sampler_name": "euler", "scheduler": "simple", "denoise": denoiseStrength,
+          "model": ["1", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["8", 0],
+        },
+        "class_type": "KSampler",
+      },
+      "10": { "inputs": { "samples": ["9", 0], "vae": ["3", 0] }, "class_type": "VAEDecode" },
+      "11": { "inputs": { "filename_prefix": "VortexFluxI2I", "images": ["10", 0] }, "class_type": "SaveImage" },
+    }
+  }
+  // Merged-checkpoint FLUX (e.g. flux1-dev-fp8.safetensors)
+  return {
+    "3": { "inputs": { "ckpt_name": modelName }, "class_type": "CheckpointLoaderSimple" },
+    "4": { "inputs": { "text": prompt, "clip": ["3", 1] }, "class_type": "CLIPTextEncode" },
+    "5": { "inputs": { "conditioning": ["4", 0], "guidance": guidance }, "class_type": "FluxGuidance" },
+    "6": { "inputs": { "text": "", "clip": ["3", 1] }, "class_type": "CLIPTextEncode" },
+    "7": { "inputs": { "image": imageFilename, "upload": "image" }, "class_type": "LoadImage" },
+    "8": { "inputs": { "pixels": ["7", 0], "vae": ["3", 2] }, "class_type": "VAEEncode" },
+    "9": {
+      "inputs": {
+        "seed": resolveSeed(seed), "steps": steps, "cfg": 1.0,
+        "sampler_name": "euler", "scheduler": "simple", "denoise": denoiseStrength,
+        "model": ["3", 0], "positive": ["5", 0], "negative": ["6", 0], "latent_image": ["8", 0],
+      },
+      "class_type": "KSampler",
+    },
+    "10": { "inputs": { "samples": ["9", 0], "vae": ["3", 2] }, "class_type": "VAEDecode" },
+    "11": { "inputs": { "filename_prefix": "VortexFluxI2I", "images": ["10", 0] }, "class_type": "SaveImage" },
+  }
+}
+
+// FLUX ControlNet via Shakker-Labs Union Pro 2.0 — a single ControlNet model that
+// supports depth/canny/openpose/etc. via SetUnionControlNetType. Preprocessor is
+// chosen by `controlType`; defaults to depth which works best for animal photos.
+export function createFluxControlNetWorkflow(
+  prompt: string,
+  modelName: string,
+  imageFilename: string,
+  controlType: 'depth' | 'canny' | 'openpose' = 'depth',
+  width = 1024,
+  height = 1024,
+  seed = -1,
+  steps = 25,
+  guidance = 3.5,
+  strength = 0.6,
+) {
+  const preprocessorClass =
+    controlType === 'canny' ? 'CannyEdgePreprocessor' :
+    controlType === 'pose'  ? 'OpenposePreprocessor' :
+                              'DepthAnythingPreprocessor'
+
+  const baseLoaders: any = isUnetModel(modelName)
+    ? {
+        "1": { "inputs": { "unet_name": stripUnetTag(modelName), "weight_dtype": "default" }, "class_type": "UNETLoader" },
+        "2": { "inputs": { "clip_name1": "t5xxl_fp16.safetensors", "clip_name2": "clip_l.safetensors", "type": "flux" }, "class_type": "DualCLIPLoader" },
+        "3": { "inputs": { "vae_name": "ae.safetensors" }, "class_type": "VAELoader" },
+      }
+    : {
+        "1": { "inputs": { "ckpt_name": modelName }, "class_type": "CheckpointLoaderSimple" },
+      }
+
+  const modelRef = isUnetModel(modelName) ? ["1", 0] : ["1", 0]
+  const clipRef = isUnetModel(modelName) ? ["2", 0] : ["1", 1]
+  const vaeRef = isUnetModel(modelName) ? ["3", 0] : ["1", 2]
+
+  return {
+    ...baseLoaders,
+    "10": { "inputs": { "image": imageFilename, "upload": "image" }, "class_type": "LoadImage" },
+    "11": { "inputs": { "image": ["10", 0], "resolution": Math.min(width, 1024) }, "class_type": preprocessorClass },
+    "12": { "inputs": { "control_net_name": "FLUX-Union-Pro-2.0.safetensors" }, "class_type": "ControlNetLoader" },
+    "13": { "inputs": { "control_net": ["12", 0], "type": controlType }, "class_type": "SetUnionControlNetType" },
+    "14": { "inputs": { "text": prompt, "clip": clipRef }, "class_type": "CLIPTextEncode" },
+    "15": { "inputs": { "conditioning": ["14", 0], "guidance": guidance }, "class_type": "FluxGuidance" },
+    "16": { "inputs": { "text": "", "clip": clipRef }, "class_type": "CLIPTextEncode" },
+    "17": {
+      "inputs": {
+        "positive": ["15", 0], "negative": ["16", 0],
+        "control_net": ["13", 0], "image": ["11", 0], "vae": vaeRef,
+        "strength": strength, "start_percent": 0, "end_percent": 0.6,
+      },
+      "class_type": "ControlNetApplyAdvanced",
+    },
+    "18": { "inputs": { "width": width, "height": height, "batch_size": 1 }, "class_type": "EmptyLatentImage" },
+    "19": {
+      "inputs": {
+        "seed": resolveSeed(seed), "steps": steps, "cfg": 1.0,
+        "sampler_name": "euler", "scheduler": "simple", "denoise": 1,
+        "model": modelRef, "positive": ["17", 0], "negative": ["17", 1], "latent_image": ["18", 0],
+      },
+      "class_type": "KSampler",
+    },
+    "20": { "inputs": { "samples": ["19", 0], "vae": vaeRef }, "class_type": "VAEDecode" },
+    "21": { "inputs": { "filename_prefix": "VortexFluxCN", "images": ["20", 0] }, "class_type": "SaveImage" },
+  }
+}
+
+// FLUX.1-Fill-dev inpainting — official BFL fill model. Source image + binary mask
+// (white = inpaint, black = keep) + prompt. Surrounding pixels stay byte-identical;
+// only the masked region is regenerated, with FLUX matching the source's lighting and
+// integrating the new content seamlessly. The mask file must be uploaded separately.
+export function createFluxFillWorkflow(
+  prompt: string,
+  fillModelName: string,
+  imageFilename: string,
+  maskFilename: string,
+  seed = -1,
+  steps = 30,
+  guidance = 30,
+) {
+  return {
+    "1": { "inputs": { "unet_name": fillModelName, "weight_dtype": "default" }, "class_type": "UNETLoader" },
+    "2": { "inputs": { "clip_name1": "t5xxl_fp16.safetensors", "clip_name2": "clip_l.safetensors", "type": "flux" }, "class_type": "DualCLIPLoader" },
+    "3": { "inputs": { "vae_name": "ae.safetensors" }, "class_type": "VAELoader" },
+    "4": { "inputs": { "image": imageFilename, "upload": "image" }, "class_type": "LoadImage" },
+    "5": { "inputs": { "image": maskFilename, "channel": "red", "upload": "image" }, "class_type": "LoadImageMask" },
+    "6": { "inputs": { "text": prompt, "clip": ["2", 0] }, "class_type": "CLIPTextEncode" },
+    "7": { "inputs": { "conditioning": ["6", 0], "guidance": guidance }, "class_type": "FluxGuidance" },
+    "8": { "inputs": { "text": "", "clip": ["2", 0] }, "class_type": "CLIPTextEncode" },
+    "9": {
+      "inputs": {
+        "positive": ["7", 0], "negative": ["8", 0], "vae": ["3", 0],
+        "pixels": ["4", 0], "mask": ["5", 0], "noise_mask": true,
+      },
+      "class_type": "InpaintModelConditioning",
+    },
+    "10": {
+      "inputs": {
+        "seed": resolveSeed(seed), "steps": steps, "cfg": 1.0,
+        "sampler_name": "euler", "scheduler": "simple", "denoise": 1,
+        "model": ["1", 0], "positive": ["9", 0], "negative": ["9", 1], "latent_image": ["9", 2],
+      },
+      "class_type": "KSampler",
+    },
+    "11": { "inputs": { "samples": ["10", 0], "vae": ["3", 0] }, "class_type": "VAEDecode" },
+    "12": { "inputs": { "filename_prefix": "VortexFluxFill", "images": ["11", 0] }, "class_type": "SaveImage" },
+  }
 }
 
 export function createImg2ImgWorkflow(
@@ -265,7 +527,10 @@ export function createControlNetWorkflow(
         "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 0.4,
         "feather": 5, "noise_mask": true, "force_inpaint": true,
         "bbox_threshold": 0.5, "bbox_dilation": 10, "bbox_crop_factor": 3,
-        "drop_size": 10, "cycle": 1, "inpaint_model": false, "noise_mask_feather": 20,
+        "drop_size": 10, "cycle": 1,
+        "sam_detection_hint": "center-1", "sam_dilation": 0, "sam_threshold": 0.93,
+        "sam_bbox_expansion": 0, "sam_mask_hint_threshold": 0.7,
+        "sam_mask_hint_use_negative": "False", "wildcard": "",
         "image": ["8", 0],
         "model": workflow["3"].inputs.model,
         "clip": workflow["6"].inputs.clip,
@@ -277,41 +542,6 @@ export function createControlNetWorkflow(
     workflow["9"].inputs.images = ["21", 0];
   }
 
-  return workflow;
-}
-
-export function createDetailedWorkflow(
-  prompt: string,
-  negativePrompt: string,
-  modelName: string,
-  width = 1024,
-  height = 1024,
-  seed = -1,
-  steps = 25,
-  cfg = 7,
-  sampler = 'dpmpp_2m',
-  scheduler = 'karras',
-  loras: LoraEntry[] = []
-) {
-  const workflow: any = createWorkflow(prompt, negativePrompt, modelName, width, height, seed, steps, cfg, sampler, scheduler, loras);
-  workflow["20"] = { "inputs": { "model_name": "bbox/face_yolov8m.pt" }, "class_type": "UltralyticsDetectorProvider" };
-  workflow["21"] = {
-    "inputs": {
-      "guide_size": 384, "guide_size_for": true, "max_size": 1024,
-      "seed": Math.floor(Math.random() * 1000000000), "steps": 20, "cfg": 8,
-      "sampler_name": "dpmpp_2m", "scheduler": "karras", "denoise": 0.4,
-      "feather": 5, "noise_mask": true, "force_inpaint": true,
-      "bbox_threshold": 0.5, "bbox_dilation": 10, "bbox_crop_factor": 3,
-      "drop_size": 10, "cycle": 1, "inpaint_model": false, "noise_mask_feather": 20,
-      "image": ["8", 0],
-      "model": workflow["3"].inputs.model,
-      "clip": workflow["6"].inputs.clip,
-      "vae": ["4", 2],
-      "positive": ["6", 0], "negative": ["7", 0], "bbox_detector": ["20", 0]
-    },
-    "class_type": "FaceDetailer"
-  };
-  workflow["9"].inputs.images = ["21", 0];
   return workflow;
 }
 
@@ -518,4 +748,100 @@ export function createV2VWorkflow(
   };
 
   return workflow;
+}
+
+// WAN 2.1 T2V via kijai's ComfyUI-WanVideoWrapper. Node names track the wrapper's API
+// (subject to change between releases — verify in the ComfyUI Manage menu if a node fails
+// to load). Defaults target the 14B FP8 model with the BF16 T5 encoder + BF16 VAE.
+export function createWanWorkflow(
+  prompt: string,
+  negativePrompt: string,
+  width = 832,
+  height = 480,
+  numFrames = 81,
+  fps = 16,
+  steps = 30,
+  cfg = 6,
+  shift = 8,
+  diffusionModel = 'wan2.1_t2v_14B_fp8_e4m3fn.safetensors',
+  t5Model = 'umt5-xxl-enc-bf16.safetensors',
+  vaeModel = 'Wan2_1_VAE_bf16.safetensors',
+  useRife = false,
+  rifeMultiplier = 2,
+) {
+  const seed = Math.floor(Math.random() * 1_000_000_000)
+  const workflow: any = {
+    "BS": {
+      // Streams 20 transformer blocks between VRAM and CPU during inference.
+      // Required to fit the 14B FP8 model on a 16GB card. Slower but works.
+      // vace_blocks_to_swap must be explicit 0 — the wrapper compares it to int before
+      // None-checking, so omitting it crashes inside block_swap().
+      "inputs": {
+        // 30 of 40 blocks swapped to CPU keeps ~10 transformer blocks resident on GPU at any
+        // time — about ~3.5GB of model weights. Combined with offloading image/txt embeds,
+        // this fits comfortably in 16GB at 832x480.
+        "blocks_to_swap": 30, "offload_img_emb": true, "offload_txt_emb": true,
+        "vace_blocks_to_swap": 0, "prefetch_blocks": 0, "use_non_blocking": true,
+      },
+      "class_type": "WanVideoBlockSwap"
+    },
+    "1": {
+      "inputs": {
+        "model": diffusionModel, "base_precision": "bf16", "quantization": "fp8_e4m3fn",
+        "load_device": "main_device", "attention_mode": "sdpa",
+        "block_swap_args": ["BS", 0],
+      },
+      "class_type": "WanVideoModelLoader"
+    },
+    "2": {
+      "inputs": { "model_name": t5Model, "precision": "bf16", "load_device": "offload_device", "quantization": "disabled" },
+      "class_type": "LoadWanVideoT5TextEncoder"
+    },
+    "3": {
+      "inputs": { "model_name": vaeModel, "precision": "bf16" },
+      "class_type": "WanVideoVAELoader"
+    },
+    "4": {
+      "inputs": { "positive_prompt": prompt, "negative_prompt": negativePrompt, "t5": ["2", 0], "force_offload": true },
+      "class_type": "WanVideoTextEncode"
+    },
+    "EE": {
+      "inputs": { "width": width, "height": height, "num_frames": numFrames },
+      "class_type": "WanVideoEmptyEmbeds"
+    },
+    "5": {
+      "inputs": {
+        "model": ["1", 0],
+        "image_embeds": ["EE", 0],
+        "text_embeds": ["4", 0],
+        "steps": steps, "cfg": cfg, "shift": shift, "seed": seed,
+        "scheduler": "unipc", "riflex_freq_index": 0,
+        "force_offload": true, "denoise_strength": 1.0,
+      },
+      "class_type": "WanVideoSampler"
+    },
+    "6": {
+      "inputs": { "vae": ["3", 0], "samples": ["5", 0], "enable_vae_tiling": true, "tile_x": 272, "tile_y": 272, "tile_stride_x": 144, "tile_stride_y": 128 },
+      "class_type": "WanVideoDecode"
+    },
+  }
+
+  let finalFrames: [string, number] = ["6", 0]
+  let finalFps = fps
+
+  if (useRife) {
+    workflow["8"] = {
+      "inputs": { "ckpt_name": "rife47.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "frames": ["6", 0] },
+      "class_type": "RIFE VFI"
+    }
+    finalFrames = ["8", 0]
+    finalFps = fps * rifeMultiplier
+  }
+
+  workflow["7"] = {
+    "inputs": { "images": finalFrames, "filename_prefix": "VortexWAN", "frame_rate": finalFps, "loop_count": 0, "format": "video/h264-mp4", "pingpong": false, "save_output": true },
+    "class_type": "VHS_VideoCombine"
+  }
+
+  return workflow
 }

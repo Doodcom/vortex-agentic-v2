@@ -14,6 +14,7 @@ contextBridge.exposeInMainWorld('electron', {
   ollamaDeleteModel: (payload: { name: string }) => ipcRenderer.invoke('ollama-delete-model', payload),
   ollamaCancel: () => ipcRenderer.invoke('ollama-cancel'),
   ollamaPurge: () => ipcRenderer.invoke('ollama-purge'),
+  ollamaQuickChat: (payload: { model: string; system?: string; user: string }) => ipcRenderer.invoke('ollama-quick-chat', payload),
   ollamaServiceStart: () => ipcRenderer.invoke('ollama-service-start'),
   ollamaServiceStop: () => ipcRenderer.invoke('ollama-service-stop'),
 
@@ -89,6 +90,10 @@ contextBridge.exposeInMainWorld('electron', {
   // Assets
   systemSaveAsset: (p: { url: string; type: 'image' | 'video'; filename?: string }) => ipcRenderer.invoke('system-save-asset', p),
   systemReadLocalImage: (path: string) => ipcRenderer.invoke('system-read-local-image', path),
+  systemReadTextFile: (path: string) => ipcRenderer.invoke('system-read-text-file', path),
+  systemConvertHeic: (payload: { base64: string; ext: string }) => ipcRenderer.invoke('system-convert-heic', payload),
+  voiceTranscribe: (payload: { audioBase64: string; mimeType?: string }) => ipcRenderer.invoke('voice-transcribe', payload),
+  voiceSpeak: (payload: { text: string }) => ipcRenderer.invoke('voice-speak', payload),
   systemListAssets: () => ipcRenderer.invoke('system-list-assets'),
   systemDeleteAsset: (path: string) => ipcRenderer.invoke('system-delete-asset', path),
 
@@ -112,6 +117,7 @@ contextBridge.exposeInMainWorld('electron', {
   startupToggleDesktop: (p: { path: string; enabled: boolean }) => ipcRenderer.invoke('startup-toggle-desktop', p),
   startupDeleteDesktop: (path: string) => ipcRenderer.invoke('startup-delete-desktop', path),
   startupToggleSystemd: (p: { unit: string; enable: boolean }) => ipcRenderer.invoke('startup-toggle-systemd', p),
+  startupAddDesktop: (p: { name: string; exec: string; comment?: string }) => ipcRenderer.invoke('startup-add-desktop', p),
 
   // AI Memory
   memoryGetAll: () => ipcRenderer.invoke('memory-get-all'),

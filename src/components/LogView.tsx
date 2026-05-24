@@ -51,8 +51,8 @@ export default function LogView() {
     setError(null)
     const res = await el.journalGetLogs({ unit: unit || undefined, priority: priority || undefined, lines: lineCount, keyword: keyword || undefined, since: since || undefined })
     setLoading(false)
-    if (res.error && res.lines.length === 0) { setError(res.error); return }
-    setLines(res.lines)
+    if (!res.success && res.error) { setError(res.error); return }
+    setLines(res.lines ?? [])
     setTimeout(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight }, 50)
   }, [unit, priority, since, keyword, lineCount])
 

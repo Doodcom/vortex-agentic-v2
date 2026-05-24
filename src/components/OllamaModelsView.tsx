@@ -258,8 +258,8 @@ export default function OllamaModelsView() {
         <div style={{ fontSize: '8px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.15em', color: '#3f3f46', marginBottom: '10px' }}>Popular Models</div>
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
           {[
-            'llama3.2:3b', 'llama3.1:8b', 'qwen2.5:7b', 'qwen2.5-coder:7b',
-            'deepseek-r1:8b', 'mistral:7b', 'gemma3:4b', 'phi4:14b',
+            'qwen3:8b', 'qwen3:14b', 'qwen3-coder:30b', 'deepseek-r1:14b',
+            'gemma3:12b', 'llava:13b', 'phi4:14b', 'mistral:7b',
             'nomic-embed-text', 'codellama:7b',
           ].map(name => (
             <button

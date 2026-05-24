@@ -47,6 +47,15 @@ export function useComfySocket() {
             const { value, max } = data.data;
             setProgress((value / max) * 100);
           }
+
+          // Modern ComfyUI emits progress_state instead of progress
+          if (data.type === 'progress_state') {
+            const nodes: Record<string, any> = data.data?.nodes ?? {}
+            const active = Object.values(nodes).find((n: any) => n.state === 'in_progress')
+            if (active && active.max > 0) {
+              setProgress((active.value / active.max) * 100)
+            }
+          }
           
           if (data.type === 'executed') {
             const out = data.data?.output ?? {}

@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Video, Box, Wand2, Film, Loader2, Download, Clapperboard } from 'lucide-react'
 import { useComfySocket } from '../hooks/useComfySocket'
-import { getModels, createVideoWorkflow, createI2VWorkflow, createV2VWorkflow, queuePrompt, getModelInfo, uploadImage, uploadVideo } from '../lib/comfyApi'
+import { getModels, createI2VWorkflow, createV2VWorkflow, createWanWorkflow, queuePrompt, getModelInfo, uploadImage, uploadVideo } from '../lib/comfyApi'
 import { notify } from '../lib/notifications'
 
 interface VideoViewProps {
@@ -14,7 +14,7 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
   const [negativePrompt, setNegativePrompt] = useState(() => localStorage.getItem('vortex-vid-neg-prompt') || 'low quality, blurry, text, watermark')
   const [models, setModels] = useState<string[]>([])
   const [selectedModel, setSelectedModel] = useState(() => localStorage.getItem('vortex-vid-model') || '')
-  const [mode, setMode] = useState<'t2v' | 'i2v' | 'v2v'>('t2v')
+  const [mode, setMode] = useState<'i2v' | 'v2v' | 'wan'>('wan')
   const [v2vSource, setV2vSource] = useState<string | null>(null)
   const [v2vDenoise, setV2vDenoise] = useState(() => Number(localStorage.getItem('vortex-vid-v2v-denoise')) || 0.5)
   const [duration, setDuration] = useState(() => Number(localStorage.getItem('vortex-vid-duration')) || 4)
@@ -109,17 +109,32 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
   }, [lastVideo])
 
   const handleGenerate = async () => {
-    if (!prompt || isGenerating || !selectedModel) return
+    if (!prompt || isGenerating || (mode !== 'wan' && !selectedModel)) return
     if (mode === 'v2v' && !v2vSource) { notify('V2V', 'Drop a source video first', 'error'); return }
     setIsGenerating(true)
 
+    // Free Ollama VRAM so ComfyUI/WAN has the full 16GB GPU. WAN 14B FP8 + block swap
+    // still needs every megabyte it can get.
+    if ((window as any).electron?.ollamaPurge) {
+      await (window as any).electron.ollamaPurge()
+    }
+    // Also drop any cached SDXL/animatediff models from a previous run.
+    if (mode === 'wan' && (window as any).electron?.comfyPurge) {
+      await (window as any).electron.comfyPurge()
+    }
+
     try {
-      const [w, h] = resolution.split('x').map(Number)
       const fps = 12;
       const frames = duration * fps;
 
       let workflow;
-      if (mode === 'i2v' && i2vSource) {
+      if (mode === 'wan') {
+        // WAN 2.1 native sampler — uses its own model loaders, ignores selectedModel.
+        // WAN 14B was trained at 832x480; ignore the UI resolution which is sized for SDXL.
+        const wanFps = 16
+        const wanFrames = Math.min(81, Math.max(17, duration * wanFps))
+        workflow = createWanWorkflow(prompt, negativePrompt, 832, 480, wanFrames, wanFps, 30, 6, 8, undefined, undefined, undefined, useRife, rifeMultiplier)
+      } else if (mode === 'i2v' && i2vSource) {
         notify('Motion Engine', 'Uploading source image...', 'info')
         const filename = await uploadImage(i2vSource)
         workflow = createI2VWorkflow(prompt, negativePrompt, selectedModel, filename, frames, fps, ultraQuality, useRife, rifeMultiplier)
@@ -128,7 +143,9 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
         const filename = await uploadVideo(v2vSource)
         workflow = createV2VWorkflow(prompt, negativePrompt, selectedModel, filename, v2vDenoise, fps, frames, ultraQuality, useRife, rifeMultiplier)
       } else {
-        workflow = createVideoWorkflow(prompt, negativePrompt, selectedModel, w, h, frames, fps, ultraQuality, useRife, rifeMultiplier)
+        notify('Motion Engine', 'Invalid mode or missing source.', 'error')
+        setIsGenerating(false)
+        return
       }
 
       await queuePrompt(workflow, clientId)
@@ -176,12 +193,6 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
         {/* Mode Toggle */}
         <div style={{ display: 'flex', background: 'rgba(255,255,255,0.03)', borderRadius: '10px', padding: '4px', border: '1px solid rgba(255,255,255,0.05)' }}>
           <button
-            onClick={() => setMode('t2v')}
-            style={{ flex: 1, padding: '8px', borderRadius: '6px', border: 'none', cursor: 'pointer', background: mode === 't2v' ? 'rgba(168,85,247,0.2)' : 'transparent', color: mode === 't2v' ? '#a855f7' : '#52525b', fontFamily: 'monospace', fontSize: '10px', fontWeight: 'bold' }}
-          >
-            T2V
-          </button>
-          <button
             onClick={() => setMode('i2v')}
             style={{ flex: 1, padding: '8px', borderRadius: '6px', border: 'none', cursor: 'pointer', background: mode === 'i2v' ? 'rgba(168,85,247,0.2)' : 'transparent', color: mode === 'i2v' ? '#a855f7' : '#52525b', fontFamily: 'monospace', fontSize: '10px', fontWeight: 'bold' }}
           >
@@ -192,6 +203,13 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
             style={{ flex: 1, padding: '8px', borderRadius: '6px', border: 'none', cursor: 'pointer', background: mode === 'v2v' ? 'rgba(168,85,247,0.2)' : 'transparent', color: mode === 'v2v' ? '#a855f7' : '#52525b', fontFamily: 'monospace', fontSize: '10px', fontWeight: 'bold' }}
           >
             V2V
+          </button>
+          <button
+            onClick={() => setMode('wan')}
+            title="WAN 2.1 14B FP8 — state of the art local T2V"
+            style={{ flex: 1, padding: '8px', borderRadius: '6px', border: 'none', cursor: 'pointer', background: mode === 'wan' ? 'rgba(251,191,36,0.18)' : 'transparent', color: mode === 'wan' ? '#fbbf24' : '#52525b', fontFamily: 'monospace', fontSize: '10px', fontWeight: 'bold' }}
+          >
+            WAN
           </button>
         </div>
 
@@ -270,39 +288,50 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
           </div>
         )}
 
-        <div>
-          <label style={labelStyle}><Box size={12} /> Neural Model</label>
-          <select 
-            value={selectedModel}
-            onChange={(e) => setSelectedModel(e.target.value)}
-            style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '10px', color: 'white', fontSize: '12px', outline: 'none' }}
-          >
-            {models.length === 0 && <option value="">No models detected</option>}
-            {models.map(m => (
-              <option key={m} value={m} style={{ background: '#0d0e11' }}>{m}</option>
-            ))}
-          </select>
-          {selectedModel && (
-            <div style={{ marginTop: '10px', padding: '10px', background: 'rgba(168,85,247,0.05)', border: '1px solid rgba(168,85,247,0.1)', borderRadius: '6px', fontSize: '10px', color: '#d8b4fe', lineHeight: 1.4, fontFamily: 'monospace' }}>
-              {getModelInfo(selectedModel)}
-            </div>
-          )}
-        </div>
-
-        <div>
-          <label style={labelStyle}>Resolution</label>
-          <div style={{ display: 'flex', gap: '8px' }}>
-            {['1024x1024', '896x896', '768x768'].map(res => (
-              <button
-                key={res}
-                onClick={() => setResolution(res)}
-                style={{ flex: 1, padding: '8px', borderRadius: '6px', fontSize: '10px', fontFamily: 'monospace', background: resolution === res ? 'rgba(168,85,247,0.2)' : 'rgba(255,255,255,0.03)', border: `1px solid ${resolution === res ? 'rgba(168,85,247,0.3)' : 'rgba(255,255,255,0.1)'}`, color: resolution === res ? '#a855f7' : '#71717a', cursor: 'pointer', transition: 'all 0.2s' }}
-              >
-                {res}
-              </button>
-            ))}
+        {mode !== 'wan' && (
+          <div>
+            <label style={labelStyle}><Box size={12} /> Neural Model</label>
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              style={{ width: '100%', background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.1)', borderRadius: '8px', padding: '10px', color: 'white', fontSize: '12px', outline: 'none' }}
+            >
+              {models.length === 0 && <option value="">No models detected</option>}
+              {models.map(m => (
+                <option key={m} value={m} style={{ background: '#0d0e11' }}>{m}</option>
+              ))}
+            </select>
+            {selectedModel && (
+              <div style={{ marginTop: '10px', padding: '10px', background: 'rgba(168,85,247,0.05)', border: '1px solid rgba(168,85,247,0.1)', borderRadius: '6px', fontSize: '10px', color: '#d8b4fe', lineHeight: 1.4, fontFamily: 'monospace' }}>
+                {getModelInfo(selectedModel)}
+              </div>
+            )}
           </div>
-        </div>
+        )}
+
+        {mode === 'wan' && (
+          <div style={{ padding: '10px', background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.2)', borderRadius: '8px', fontSize: '10px', color: '#fcd34d', fontFamily: 'monospace', lineHeight: 1.5 }}>
+            <div style={{ fontWeight: 'bold', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: '4px' }}>WAN 2.1 — 14B FP8</div>
+            832 × 480 · 16 fps · block-swap 30/40 · ~6-10 min per clip
+          </div>
+        )}
+
+        {mode !== 'wan' && (
+          <div>
+            <label style={labelStyle}>Resolution</label>
+            <div style={{ display: 'flex', gap: '8px' }}>
+              {['1024x1024', '896x896', '768x768'].map(res => (
+                <button
+                  key={res}
+                  onClick={() => setResolution(res)}
+                  style={{ flex: 1, padding: '8px', borderRadius: '6px', fontSize: '10px', fontFamily: 'monospace', background: resolution === res ? 'rgba(168,85,247,0.2)' : 'rgba(255,255,255,0.03)', border: `1px solid ${resolution === res ? 'rgba(168,85,247,0.3)' : 'rgba(255,255,255,0.1)'}`, color: resolution === res ? '#a855f7' : '#71717a', cursor: 'pointer', transition: 'all 0.2s' }}
+                >
+                  {res}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
 
         <div>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
@@ -328,18 +357,20 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
 
 
         <div style={{ display: 'flex', gap: '8px', flexDirection: 'column' }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(168,85,247,0.05)', padding: '10px', borderRadius: '10px', border: '1px solid rgba(168,85,247,0.1)' }}>
-            <div style={{ display: 'flex', flexDirection: 'column' }}>
-              <span style={{ fontSize: '10px', color: '#f4f4f5', fontWeight: 'bold', fontFamily: 'monospace' }}>ULTRA QUALITY</span>
-              <span style={{ fontSize: '8px', color: '#a855f7', opacity: 0.7, fontFamily: 'monospace' }}>Uses System RAM Fallback</span>
+          {mode !== 'wan' && (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(168,85,247,0.05)', padding: '10px', borderRadius: '10px', border: '1px solid rgba(168,85,247,0.1)' }}>
+              <div style={{ display: 'flex', flexDirection: 'column' }}>
+                <span style={{ fontSize: '10px', color: '#f4f4f5', fontWeight: 'bold', fontFamily: 'monospace' }}>ULTRA QUALITY</span>
+                <span style={{ fontSize: '8px', color: '#a855f7', opacity: 0.7, fontFamily: 'monospace' }}>Uses System RAM Fallback</span>
+              </div>
+              <button
+                onClick={() => setUltraQuality(!ultraQuality)}
+                style={{ width: '32px', height: '16px', borderRadius: '8px', background: ultraQuality ? '#a855f7' : '#333', border: 'none', cursor: 'pointer', position: 'relative' }}
+              >
+                <div style={{ position: 'absolute', top: '2px', left: ultraQuality ? '18px' : '2px', width: '12px', height: '12px', borderRadius: '50%', background: 'white', transition: 'left 0.2s' }} />
+              </button>
             </div>
-            <button 
-              onClick={() => setUltraQuality(!ultraQuality)}
-              style={{ width: '32px', height: '16px', borderRadius: '8px', background: ultraQuality ? '#a855f7' : '#333', border: 'none', cursor: 'pointer', position: 'relative' }}
-            >
-              <div style={{ position: 'absolute', top: '2px', left: ultraQuality ? '18px' : '2px', width: '12px', height: '12px', borderRadius: '50%', background: 'white', transition: 'left 0.2s' }} />
-            </button>
-          </div>
+          )}
 
           <div style={{ background: 'rgba(168,85,247,0.05)', padding: '10px', borderRadius: '10px', border: '1px solid rgba(168,85,247,0.1)' }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
@@ -396,7 +427,7 @@ export default function VideoView({ i2vSource }: VideoViewProps) {
 
         <button 
           onClick={handleGenerate}
-          disabled={isGenerating || !prompt || !selectedModel}
+          disabled={isGenerating || !prompt || (mode !== 'wan' && !selectedModel)}
           style={{ 
             width: '100%', padding: '14px', borderRadius: '8px', background: isGenerating ? 'rgba(255,255,255,0.05)' : '#9333ea', 
             color: isGenerating ? '#3f3f46' : 'white', border: 'none', fontWeight: 'bold', textTransform: 'uppercase', 

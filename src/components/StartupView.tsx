@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { RefreshCw, Trash2, Power, Terminal, MonitorPlay } from 'lucide-react'
+import { RefreshCw, Trash2, Power, Terminal, MonitorPlay, Plus, X } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { notify } from '../lib/notifications'
 
@@ -41,6 +41,11 @@ export default function StartupView() {
   const [systemdServices, setSystemdServices] = useState<SystemdService[]>([])
   const [loading, setLoading] = useState(false)
   const [pendingPath, setPendingPath] = useState<string | null>(null)
+  const [showAddForm, setShowAddForm] = useState(false)
+  const [addName, setAddName] = useState('')
+  const [addExec, setAddExec] = useState('')
+  const [addComment, setAddComment] = useState('')
+  const [addLoading, setAddLoading] = useState(false)
 
   const load = useCallback(async () => {
     const el = (window as any).electron
@@ -94,6 +99,24 @@ export default function StartupView() {
     }
   }
 
+  const addDesktop = async () => {
+    if (!addName.trim() || !addExec.trim()) return
+    const el = (window as any).electron
+    setAddLoading(true)
+    try {
+      const res = await el.startupAddDesktop({ name: addName.trim(), exec: addExec.trim(), comment: addComment.trim() || undefined })
+      if (res.success) {
+        notify('Startup', `Added ${addName.trim()} to autostart`, 'success')
+        setAddName(''); setAddExec(''); setAddComment(''); setShowAddForm(false)
+        await load()
+      } else {
+        notify('Error', res.error ?? 'Failed to add entry', 'error')
+      }
+    } finally {
+      setAddLoading(false)
+    }
+  }
+
   const labelStyle: React.CSSProperties = {
     fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.15em', color: '#52525b',
   }
@@ -122,7 +145,14 @@ export default function StartupView() {
       <div className="v-card" style={{ padding: 0, overflow: 'hidden' }}>
         <div style={{ padding: '12px 18px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', gap: '8px' }}>
           <MonitorPlay size={13} style={{ color: '#52525b' }} />
-          <span style={labelStyle}>XDG Desktop Autostart — ~/.config/autostart/</span>
+          <span style={{ ...labelStyle, flex: 1 }}>XDG Desktop Autostart — ~/.config/autostart/</span>
+          <button
+            onClick={() => setShowAddForm(v => !v)}
+            style={{ display: 'flex', alignItems: 'center', gap: '5px', padding: '4px 10px', borderRadius: '6px', background: showAddForm ? 'rgba(239,68,68,0.1)' : 'rgba(255,255,255,0.04)', border: `1px solid ${showAddForm ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.07)'}`, color: showAddForm ? 'var(--crimson)' : '#71717a', fontSize: '9px', fontFamily: 'monospace', textTransform: 'uppercase', cursor: 'pointer', letterSpacing: '0.1em' }}
+          >
+            {showAddForm ? <X size={10} /> : <Plus size={10} />}
+            {showAddForm ? 'Cancel' : 'Add App'}
+          </button>
         </div>
 
         {desktopEntries.length === 0 && !loading && (
@@ -130,6 +160,60 @@ export default function StartupView() {
             No desktop autostart entries found.
           </div>
         )}
+
+        <AnimatePresence initial={false}>
+          {showAddForm && (
+            <motion.div
+              key="add-form"
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              style={{ overflow: 'hidden', borderBottom: '1px solid rgba(255,255,255,0.05)' }}
+            >
+              <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: '10px', background: 'rgba(239,68,68,0.03)' }}>
+                <span style={{ ...labelStyle, color: '#52525b' }}>New Autostart Entry</span>
+                <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                  <div style={{ flex: '1 1 160px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <span style={{ fontSize: '8px', fontFamily: 'monospace', color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Name *</span>
+                    <input
+                      value={addName}
+                      onChange={e => setAddName(e.target.value)}
+                      placeholder="e.g. My App"
+                      style={{ padding: '6px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#f4f4f5', fontSize: '11px', fontFamily: 'monospace', outline: 'none' }}
+                    />
+                  </div>
+                  <div style={{ flex: '2 1 240px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <span style={{ fontSize: '8px', fontFamily: 'monospace', color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Exec Command *</span>
+                    <input
+                      value={addExec}
+                      onChange={e => setAddExec(e.target.value)}
+                      placeholder="e.g. /usr/bin/myapp --flag"
+                      style={{ padding: '6px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#f4f4f5', fontSize: '11px', fontFamily: 'monospace', outline: 'none' }}
+                    />
+                  </div>
+                  <div style={{ flex: '1 1 160px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
+                    <span style={{ fontSize: '8px', fontFamily: 'monospace', color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Comment</span>
+                    <input
+                      value={addComment}
+                      onChange={e => setAddComment(e.target.value)}
+                      placeholder="Optional description"
+                      style={{ padding: '6px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#f4f4f5', fontSize: '11px', fontFamily: 'monospace', outline: 'none' }}
+                    />
+                  </div>
+                </div>
+                <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                  <button
+                    onClick={addDesktop}
+                    disabled={addLoading || !addName.trim() || !addExec.trim()}
+                    style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 16px', borderRadius: '7px', background: 'rgba(239,68,68,0.12)', border: '1px solid rgba(239,68,68,0.3)', color: 'var(--crimson)', fontSize: '10px', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.1em', cursor: addLoading || !addName.trim() || !addExec.trim() ? 'default' : 'pointer', opacity: addLoading || !addName.trim() || !addExec.trim() ? 0.4 : 1 }}
+                  >
+                    <Plus size={10} /> Add to Autostart
+                  </button>
+                </div>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
         <AnimatePresence initial={false}>
           {desktopEntries.map(entry => (
