@@ -63,7 +63,8 @@ export async function uploadVideo(url: string): Promise<string> {
   const response = await fetch(url);
   const blob = await response.blob();
   const formData = new FormData();
-  const ext = url.split('.').pop()?.split('?')[0] || 'mp4';
+  const mimeToExt: Record<string, string> = { 'video/mp4': 'mp4', 'video/webm': 'webm', 'video/quicktime': 'mov' };
+  const ext = mimeToExt[blob.type] ?? url.match(/\.([a-z0-9]+)(?:\?|$)/i)?.[1] ?? 'mp4';
   formData.append('image', blob, `vortex-v2v-${Date.now()}.${ext}`);
   const uploadResp = await fetch(`${COMFY_URL}/upload/image`, { method: 'POST', body: formData });
   const data = await uploadResp.json();
@@ -605,7 +606,7 @@ export function createVideoWorkflow(
 
   if (useRife) {
     workflow["20"] = {
-      "inputs": { "ckpt_name": "rife47.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "frames": ["9", 0] },
+      "inputs": { "ckpt_name": "rife49.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "scale_factor": 1.0, "dtype": "float32", "torch_compile": false, "batch_size": 1, "frames": ["9", 0] },
       "class_type": "RIFE VFI"
     };
     finalFrames = ["20", 0];
@@ -673,7 +674,7 @@ export function createI2VWorkflow(
 
   if (useRife) {
     workflow["20"] = {
-      "inputs": { "ckpt_name": "rife47.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "frames": ["11", 0] },
+      "inputs": { "ckpt_name": "rife49.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "scale_factor": 1.0, "dtype": "float32", "torch_compile": false, "batch_size": 1, "frames": ["11", 0] },
       "class_type": "RIFE VFI"
     };
     finalFrames = ["20", 0];
@@ -740,7 +741,7 @@ export function createV2VWorkflow(
 
   if (useRife) {
     workflow["20"] = {
-      "inputs": { "ckpt_name": "rife47.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "frames": ["9", 0] },
+      "inputs": { "ckpt_name": "rife49.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "scale_factor": 1.0, "dtype": "float32", "torch_compile": false, "batch_size": 1, "frames": ["9", 0] },
       "class_type": "RIFE VFI"
     };
     finalFrames = ["20", 0];
@@ -836,7 +837,7 @@ export function createWanWorkflow(
 
   if (useRife) {
     workflow["8"] = {
-      "inputs": { "ckpt_name": "rife47.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "frames": ["6", 0] },
+      "inputs": { "ckpt_name": "rife49.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "scale_factor": 1.0, "dtype": "float32", "torch_compile": false, "batch_size": 1, "frames": ["6", 0] },
       "class_type": "RIFE VFI"
     }
     finalFrames = ["8", 0]
@@ -947,7 +948,7 @@ export function createWanI2VWorkflow(
 
   if (useRife) {
     workflow["8"] = {
-      "inputs": { "ckpt_name": "rife47.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "frames": ["6", 0] },
+      "inputs": { "ckpt_name": "rife49.pth", "clear_cache_after_n_frames": 10, "multiplier": rifeMultiplier, "fast_mode": true, "ensemble": true, "scale_factor": 1.0, "dtype": "float32", "torch_compile": false, "batch_size": 1, "frames": ["6", 0] },
       "class_type": "RIFE VFI"
     }
     finalFrames = ["8", 0]
