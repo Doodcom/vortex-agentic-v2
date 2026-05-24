@@ -101,6 +101,11 @@ function createWindow() {
     },
   })
 
+  win.webContents.on('before-input-event', (_, input) => {
+    if (input.type === 'keyDown' && input.key === 'F5') win?.webContents.reload()
+    if (input.type === 'keyDown' && input.key === 'F12') win?.webContents.toggleDevTools()
+  })
+
   // Hide to tray on close instead of quitting — purge VRAM so GPU is freed while minimised
   win.on('close', (e) => {
     if (!app.isQuiting) {
