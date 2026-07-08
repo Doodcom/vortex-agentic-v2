@@ -5,3 +5,8 @@ release/
 *.log
 .env
 .env.*
+
+# Agent / tooling scratch artifacts
+.agents/
+.claude/
+lint_output.txt
