@@ -16,7 +16,8 @@
     "lint": "eslint .",
     "preview": "vite preview",
     "build:electron": "electron-builder",
-    "rebuild:native": "bash scripts/rebuild-native.sh"
+    "rebuild:native": "bash scripts/rebuild-native.sh",
+    "test:e2e": "node tests/run-all.js"
   },
   "build": {
     "appId": "com.vortex.agentic.v2",
@@ -75,13 +76,15 @@
     "lucide-react": "^1.11.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
+    "react-force-graph-3d": "^1.29.1",
     "react-markdown": "^10.1.0",
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
     "shiki": "^4.0.2",
     "systeminformation": "^5.31.5",
-    "tailwind-merge": "^3.5.0"
+    "tailwind-merge": "^3.5.0",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
@@ -95,6 +98,7 @@
     "electron": "^41.3.0",
     "electron-builder": "^26.8.1",
     "electron-vite": "^5.0.0",
+    "esbuild": "^0.28.1",
     "eslint": "^10.2.1",
     "eslint-plugin-react-hooks": "^7.1.1",
     "eslint-plugin-react-refresh": "^0.5.2",

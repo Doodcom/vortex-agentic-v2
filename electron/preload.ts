@@ -21,9 +21,15 @@ contextBridge.exposeInMainWorld('electron', {
   // System
   systemCheckUpdates: () => ipcRenderer.invoke('system-check-updates'),
   systemUpgrade: () => ipcRenderer.invoke('system-upgrade'),
+  systemCheckFirmware: () => ipcRenderer.invoke('system-check-firmware'),
+  systemFirmwareUpdate: () => ipcRenderer.invoke('system-firmware-update'),
   aiUpdateComponents: () => ipcRenderer.invoke('ai-update-components'),
   comfyPurge: () => ipcRenderer.invoke('comfy-purge'),
   systemCleanup: (type: 'cache' | 'orphans' | 'logs' | 'all') => ipcRenderer.invoke('system-cleanup', type),
+  systemCleanupAnalyze: () => ipcRenderer.invoke('system-cleanup-analyze'),
+  systemCleanupExecute: (categories: string[]) => ipcRenderer.invoke('system-cleanup-execute', categories),
+  logRemediationAnalyze: (p: { unit?: string; lines?: number; model?: string }) => ipcRenderer.invoke('log-remediation-analyze', p),
+  logRemediationApply: (p: { command: string }) => ipcRenderer.invoke('log-remediation-apply', p),
   systemOptimize: (type: 'ssd' | 'services' | 'performance') => ipcRenderer.invoke('system-optimize', type),
   systemGetLogs: (lines?: number) => ipcRenderer.invoke('system-get-logs', lines),
   systemGetErrorLogs: (lines?: number) => ipcRenderer.invoke('system-get-error-logs', lines),
@@ -79,6 +85,18 @@ contextBridge.exposeInMainWorld('electron', {
   packageInfo: (name: string) => ipcRenderer.invoke('package-info', name),
   packageInstall: (p: { name: string; helper: string }) => ipcRenderer.invoke('package-install', p),
   packageRemove: (name: string) => ipcRenderer.invoke('package-remove', name),
+
+  // Flatpak
+  flatpakList: () => ipcRenderer.invoke('flatpak-list'),
+  flatpakSearch: (query: string) => ipcRenderer.invoke('flatpak-search', query),
+  flatpakInstall: (appId: string) => ipcRenderer.invoke('flatpak-install', appId),
+  flatpakUninstall: (appId: string) => ipcRenderer.invoke('flatpak-uninstall', appId),
+
+  // AppImage
+  appimageList: () => ipcRenderer.invoke('appimage-list'),
+  appimageRegister: (path: string) => ipcRenderer.invoke('appimage-register', path),
+  appimageUnregister: (path: string) => ipcRenderer.invoke('appimage-unregister', path),
+  appimageMakeExecutable: (path: string) => ipcRenderer.invoke('appimage-make-executable', path),
 
   // Boot analyser
   systemAnalyzeBoot: () => ipcRenderer.invoke('system-analyze-boot'),
@@ -179,6 +197,13 @@ contextBridge.exposeInMainWorld('electron', {
   vaultRestore: (p: { filename: string }) => ipcRenderer.invoke('vault-restore', p),
   vaultDelete: (p: { filename: string }) => ipcRenderer.invoke('vault-delete', p),
 
+  // Vault Sync
+  vaultGetSyncConfig: () => ipcRenderer.invoke('vault-get-sync-config'),
+  vaultSaveSyncConfig: (cfg: { remoteName: string; remotePath: string }) => ipcRenderer.invoke('vault-save-sync-config', cfg),
+  vaultSyncBackup: (p: { filename: string }) => ipcRenderer.invoke('vault-sync-backup', p),
+  vaultListRemote: () => ipcRenderer.invoke('vault-list-remote'),
+  vaultDownloadRemote: (p: { filename: string }) => ipcRenderer.invoke('vault-download-remote', p),
+
   // Benchmark
   benchmarkRun: (payload: { tests: string[] }) => ipcRenderer.invoke('benchmark-run', payload),
 
@@ -196,6 +221,18 @@ contextBridge.exposeInMainWorld('electron', {
   // Cron
   cronList: () => ipcRenderer.invoke('cron-list'),
   cronSave: (payload: { entries: any[] }) => ipcRenderer.invoke('cron-save', payload),
+
+  // R5: Btrfs Maintenance
+  btrfsScrub: (action: string) => ipcRenderer.invoke('btrfs-scrub', action),
+  btrfsBalance: (action: string, dusage?: number, musage?: number) => ipcRenderer.invoke('btrfs-balance', action, dusage, musage),
+  btrfsDefrag: (path: string) => ipcRenderer.invoke('btrfs-defrag', path),
+  btrfsUsage: () => ipcRenderer.invoke('btrfs-usage'),
+
+  // R6: Docker Compose Builder
+  dockerComposeDeploy: (p: { projectName: string; yamlContent: string }) => ipcRenderer.invoke('docker-compose-deploy', p),
+  dockerComposeDown: (p: { projectName: string }) => ipcRenderer.invoke('docker-compose-down', p),
+  dockerComposeDelete: (p: { projectName: string }) => ipcRenderer.invoke('docker-compose-delete', p),
+  dockerComposeList: () => ipcRenderer.invoke('docker-compose-list'),
 
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
   showContextMenu: (props: any) => ipcRenderer.invoke('show-context-menu', props)

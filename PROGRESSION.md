@@ -158,10 +158,7 @@
 - Health Report requires Ollama running; score is AI-generated heuristic (not a hard metric)
 - App Launcher strips `.desktop` field codes (`%u`, `%f`, etc.) before spawning — commands expecting them won't receive values
 
-## Roadmap (Not Yet Started)
 
-- 3D AI Memory graph (D3.js visualisation of SQLite facts as node graph inside MemoryView)
-- Command Palette: add entries for all new v2.0 views (Cron, SSH, Firewall, Vault, Benchmark, Env, Health, App Launcher)
 
 ---
 

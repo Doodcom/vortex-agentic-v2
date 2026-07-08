@@ -3,7 +3,12 @@ import { motion, Reorder } from 'framer-motion'
 import { Cpu, MemoryStick, HardDrive, Network, Settings2, Eye, EyeOff, Terminal, CheckCircle2, XCircle, Bot, Activity, Zap, Sparkles, Home, Rocket, Shield, RotateCcw, GripVertical } from 'lucide-react'
 import { notify } from '../lib/notifications'
 
-interface DashboardViewProps { stats: any, onNavigate?: (tab: string) => void }
+import type { SystemStats } from '../types/electron.d.ts'
+
+interface DashboardViewProps {
+  stats?: SystemStats | null
+  onNavigate?: (tab: string) => void
+}
 
 const WIDGET_DEFS = [
   { id: 'cpu',      label: 'CPU Load' },
@@ -55,7 +60,16 @@ export default function DashboardView({ stats, onNavigate }: DashboardViewProps)
   const [ramHist, setRamHist]     = useState<number[]>([])
   const [gpuHist, setGpuHist]     = useState<number[]>([])
 
-  const [auditLog, setAuditLog]   = useState<any[]>([])
+interface AuditLogEntry {
+  id: number
+  command: string
+  exit_code: number | null
+  source: string
+  session_id: number | null
+  created_at: number
+}
+
+  const [auditLog, setAuditLog]   = useState<AuditLogEntry[]>([])
   const [powerProfile, setPowerProfile] = useState<string | null>(null)
   const [gameMode, setGameMode] = useState(() => localStorage.getItem('vortex-game-mode') === 'true')
   const [gameModeBusy, setGameModeBusy] = useState(false)
@@ -90,22 +104,24 @@ export default function DashboardView({ stats, onNavigate }: DashboardViewProps)
     const cpu = stats.cpu?.load ?? 0
     const ram = stats.memory ? (stats.memory.used / stats.memory.total) * 100 : 0
     const gpu = stats.gpu?.utilizationGpu ?? 0
-    setCpuHist(prev => [...prev, cpu].slice(-40))
-    setRamHist(prev => [...prev, ram].slice(-40))
-    setGpuHist(prev => [...prev, gpu].slice(-40))
+    setTimeout(() => {
+      setCpuHist(prev => [...prev, cpu].slice(-40))
+      setRamHist(prev => [...prev, ram].slice(-40))
+      setGpuHist(prev => [...prev, gpu].slice(-40))
+    }, 0)
   }, [stats])
 
   useEffect(() => {
-    const el = (window as any).electron
+    const el = window.electron
     if (!el?.dbGetAuditLog) return
-    el.dbGetAuditLog(8).then((rows: any[]) => setAuditLog(rows))
+    el.dbGetAuditLog(8).then((rows) => setAuditLog(rows))
     
     if (el?.powerGetProfile) {
-      el.powerGetProfile().then((res: any) => setPowerProfile(res.profile))
+      el.powerGetProfile().then((res) => setPowerProfile(res.profile))
     }
 
     if (el?.guardianStatus) {
-      el.guardianStatus().then((res: any) => {
+      el.guardianStatus().then((res) => {
         setGuardianEnabled(res.enabled)
         setGuardianActiveOpt(res.activeOptimization)
       })
@@ -113,7 +129,7 @@ export default function DashboardView({ stats, onNavigate }: DashboardViewProps)
   }, [])
 
   const handleSetPowerProfile = async (p: string) => {
-    const el = (window as any).electron
+    const el = window.electron
     if (el?.powerSetProfile) {
       const res = await el.powerSetProfile(p)
       if (res.success) setPowerProfile(p)
@@ -423,7 +439,16 @@ function GpuStat({ label, value, pct, color, noBar }: { label: string; value: st
   )
 }
 
-function StatCard({ icon: Icon, label, value, sub, pct, color = 'var(--crimson)' }: any) {
+interface StatCardProps {
+  icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>
+  label: string
+  value: string
+  sub: string
+  pct: number
+  color?: string
+}
+
+function StatCard({ icon: Icon, label, value, sub, pct, color = 'var(--crimson)' }: StatCardProps) {
   const c = progressColor(pct) === 'var(--signal)' ? color : progressColor(pct)
   return (
     <motion.div className="v-card" style={{ padding: '16px 20px' }} initial={{ opacity: 0 }} animate={{ opacity: 1 }}>

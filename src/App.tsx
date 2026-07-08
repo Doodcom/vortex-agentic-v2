@@ -43,12 +43,35 @@ import AppLauncherView from './components/AppLauncherView'
 import HealthReportView from './components/HealthReportView'
 import SchedulerView from './components/SchedulerView'
 import DepGraph from './components/DepGraph'
+import LogAnalysisView from './components/LogAnalysisView'
+import DockerComposeBuilderView from './components/DockerComposeBuilderView'
 import { useTheme } from './components/ThemeProvider'
-import { navItems } from './components/Sidebar'
-import { ALERT_THRESHOLDS_KEY, DEFAULT_THRESHOLDS, type AlertThresholds } from './components/SettingsPage'
+import { navItems } from './lib/navigation'
+import { ALERT_THRESHOLDS_KEY, DEFAULT_THRESHOLDS, type AlertThresholds } from './lib/alerts'
 import { notify } from './lib/notifications'
+import type { SystemStats } from './types/electron'
 
-const VIEW_MAP: Record<string, any> = {
+interface ActiveViewProps {
+  onNavigate?: (tab: string) => void
+  onExplore?: (name: string) => void
+  initialPackage?: string | null
+  onAnimate?: (url: string) => void
+  i2vSource?: string | null
+  onAskAI?: (tab: string) => void
+  stats?: SystemStats | null
+}
+
+interface PackageDepTree {
+  name: string
+  version: string
+  direct: string[]
+  optional: string[]
+  required: string[]
+  depDetails: Record<string, string[]>
+}
+
+
+const VIEW_MAP: Record<string, React.ComponentType<ActiveViewProps>> = {
   dashboard: DashboardView,
   home: HomeView,
   assistant: AssistantView,
@@ -61,11 +84,13 @@ const VIEW_MAP: Record<string, any> = {
   processes: ProcessView,
   services: ServiceView,
   docker: DockerView,
+  'compose-builder': DockerComposeBuilderView,
   network: NetworkView,
   boot: BootView,
   disk: DiskView,
   audit: AuditView,
   logs: LogView,
+  'log-analysis': LogAnalysisView,
   startup: StartupView,
   'image-gen': ImageView,
   'video-gen': VideoView,
@@ -95,7 +120,7 @@ export default function App() {
   const [isCommandPaletteOpen, setIsCommandPaletteOpen] = useState(false)
   const [isShortcutsOpen, setIsShortcutsOpen] = useState(false)
   const [i2vSource, setI2vSource] = useState<string | null>(null)
-  const [stats, setStats] = useState<any>(null)
+  const [stats, setStats] = useState<SystemStats | null>(null)
   const [sidebarWidth, setSidebarWidth] = useState(() => parseInt(localStorage.getItem('vortex-sidebar-width') ?? '256', 10))
   const [explorePkg, setExplorePkg] = useState<string | null>(null)
   const isDraggingRef = useRef(false)
@@ -183,7 +208,7 @@ export default function App() {
   useEffect(() => {
     const handleContextMenu = (e: MouseEvent) => {
       e.preventDefault()
-      if ((window as any).electron) {
+      if (window.electron) {
         // Build basic props to mimic Electron's native context-menu event
         const props = {
           x: e.clientX,
@@ -194,7 +219,7 @@ export default function App() {
             canPaste: true
           }
         }
-        ;(window as any).electron.showContextMenu(props)
+        window.electron.showContextMenu(props)
       }
     }
     window.addEventListener('contextmenu', handleContextMenu)
@@ -203,10 +228,10 @@ export default function App() {
 
   useEffect(() => {
     const COOLDOWN = 5 * 60 * 1000
-    const checkAlerts = (s: any, gpuUsedPct: number) => {
+    const checkAlerts = (s: SystemStats | null, gpuUsedPct: number) => {
       const now = Date.now()
       let thresholds: AlertThresholds = DEFAULT_THRESHOLDS
-      try { thresholds = { ...DEFAULT_THRESHOLDS, ...JSON.parse(localStorage.getItem(ALERT_THRESHOLDS_KEY) ?? '{}') } } catch {}
+      try { thresholds = { ...DEFAULT_THRESHOLDS, ...JSON.parse(localStorage.getItem(ALERT_THRESHOLDS_KEY) ?? '{}') } } catch (err) { void err }
 
       const metrics: { key: keyof AlertThresholds; value: number; label: string }[] = [
         { key: 'cpu', value: s?.cpu?.load ?? 0, label: 'CPU' },
@@ -225,14 +250,14 @@ export default function App() {
 
     let lastGpuPct = 0
     const fetchStats = async () => {
-      if (!(window as any).electron) return
+      if (!window.electron) return
       try {
-        const s = await (window as any).electron.getSystemStats()
+        const s = await window.electron.getSystemStats()
         setStats(s)
         try {
-          const g = await (window as any).electron.gpuVramStats()
+          const g = await window.electron.gpuVramStats()
           if (g?.success && g.total > 0) lastGpuPct = (g.used / g.total) * 100
-        } catch {}
+        } catch (err) { void err }
         checkAlerts(s, lastGpuPct)
       } catch (e) {
         console.error('Failed to fetch stats:', e)
@@ -244,8 +269,8 @@ export default function App() {
   }, [])
 
   useEffect(() => {
-    const handleSetI2vSource = (e: any) => {
-      setI2vSource(e.detail)
+    const handleSetI2vSource = (e: Event) => {
+      setI2vSource((e as CustomEvent<string>).detail)
     }
     window.addEventListener('vortex-set-i2v-source', handleSetI2vSource)
     return () => window.removeEventListener('vortex-set-i2v-source', handleSetI2vSource)
@@ -259,7 +284,7 @@ export default function App() {
     const isComfy = activeTab === 'image-gen' || activeTab === 'video-gen'
     const targetAssistant = id === 'assistant'
     const targetComfy = id === 'image-gen' || id === 'video-gen'
-    const el = (window as any).electron
+    const el = window.electron
 
     // Entering an AI tab from a non-AI tab — boot Ollama service
     if (!isAI && targetAI) {
@@ -300,7 +325,7 @@ export default function App() {
     const Component = VIEW_MAP[activeTab] || (() => <div className="p-20 opacity-30 italic font-mono">View_Missing: {activeTab}</div>)
     
     // Inject special props for specific components
-    const specialProps: any = {}
+    const specialProps: Partial<ActiveViewProps> = {}
     if (activeTab === 'dashboard') specialProps.onNavigate = setActiveTab
     if (activeTab === 'packages') specialProps.onExplore = (name: string) => { setExplorePkg(name); setActiveTab('depgraph') }
     if (activeTab === 'depgraph') specialProps.initialPackage = explorePkg
@@ -309,7 +334,7 @@ export default function App() {
     if (activeTab === 'terminal') specialProps.onAskAI = setActiveTab
     if (activeTab === 'dashboard' || activeTab === 'docker') specialProps.stats = stats
 
-    return <Component {...specialProps} />
+    return <Component {...(specialProps as ActiveViewProps)} />
   }
 
   return (
@@ -382,16 +407,16 @@ export default function App() {
   )
 }
 
-function DepGraphWrapper({ initialPackage }: { initialPackage: string | null }) {
-  const [tree, setTree] = useState<any>(null)
+function DepGraphWrapper({ initialPackage }: { initialPackage?: string | null }) {
+  const [tree, setTree] = useState<PackageDepTree | null>(null)
   const [loading, setLoading] = useState(false)
   const [target, setTarget] = useState(initialPackage ?? 'linux')
 
   useEffect(() => {
     async function fetch() {
-      if (!(window as any).electron) return
+      if (!window.electron) return
       setLoading(true)
-      const res = await (window as any).electron.packageGetTree(target)
+      const res = await window.electron.packageGetTree(target)
       setTree(res)
       setLoading(false)
     }

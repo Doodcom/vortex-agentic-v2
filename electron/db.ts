@@ -3,13 +3,19 @@ import path from 'node:path'
 import { app, ipcMain } from 'electron'
 import si from 'systeminformation'
 
-let db: Database.Database
+export let db: Database.Database
 
 export function setupDbHandlers() {
   const dbPath = path.join(app.getPath('userData'), 'vortex.db')
   db = new Database(dbPath)
 
   db.exec(`
+    CREATE TABLE IF NOT EXISTS vault_sync_config (
+      id          INTEGER PRIMARY KEY CHECK (id = 1),
+      remote_name TEXT NOT NULL,
+      remote_path TEXT NOT NULL
+    );
+
     CREATE TABLE IF NOT EXISTS ai_memory (
       id         INTEGER PRIMARY KEY AUTOINCREMENT,
       fact       TEXT    NOT NULL,
@@ -218,7 +224,7 @@ export function startResourcePoller(): void {
 // ── RAG persistence ────────────────────────────────────────────────────────
 export function saveRagChunks(projectPath: string, chunks: { filePath: string, chunkIndex: number, content: string, embedding: number[] }[]) {
   const insert = db.prepare('INSERT INTO rag_chunks (project_path, file_path, chunk_index, content, embedding) VALUES (?, ?, ?, ?, ?)')
-  const transaction = db.transaction((data) => {
+  const transaction = db.transaction((data: any[]) => {
     for (const item of data) {
       insert.run(projectPath, item.filePath, item.chunkIndex, item.content, Buffer.from(new Float32Array(item.embedding).buffer))
     }

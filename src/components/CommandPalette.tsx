@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Search, Zap, Trash2, LayoutDashboard, MessageSquare, RefreshCw, Sparkles, Video, Box, Layers,
   Home, Terminal, Network, Cpu, HardDrive, Activity, List, Settings, Brain, Image, BookOpen,
-  Shield, Rocket, BarChart3, Play, Server, BotMessageSquare, Camera, GitBranch
+  Shield, Rocket, BarChart3, Play, Server, BotMessageSquare, Camera, GitBranch,
+  CalendarClock, KeyRound, FlameKindling, Archive, Gauge, Variable, AppWindow, HeartPulse
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 
@@ -41,6 +42,14 @@ const COMMANDS = [
   { id: 'audit',     label: 'Audit Log',                icon: BarChart3,       action: 'nav:audit'       },
   { id: 'depgraph',  label: 'Dependency Graph',         icon: Layers,          action: 'nav:depgraph'    },
   { id: 'automations', label: 'Automation Workflows',    icon: GitBranch,       action: 'nav:automations' },
+  { id: 'cron',      label: 'Cron Job Manager',         icon: CalendarClock,   action: 'nav:cron'        },
+  { id: 'ssh',       label: 'SSH Key Manager',          icon: KeyRound,        action: 'nav:ssh'         },
+  { id: 'firewall',  label: 'UFW Firewall',             icon: FlameKindling,   action: 'nav:firewall'    },
+  { id: 'vault',     label: 'Dotfile Vault',            icon: Archive,         action: 'nav:vault'       },
+  { id: 'benchmark', label: 'System Benchmark',         icon: Gauge,           action: 'nav:benchmark'   },
+  { id: 'env',       label: 'Environment Variables',    icon: Variable,        action: 'nav:env'         },
+  { id: 'app-launcher', label: 'App Launcher',          icon: AppWindow,       action: 'nav:app-launcher'},
+  { id: 'health',    label: 'Health Report',            icon: HeartPulse,      action: 'nav:health'      },
   { id: 'settings',  label: 'Settings',                 icon: Settings,        action: 'nav:settings'    },
 ]
 

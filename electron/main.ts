@@ -108,7 +108,7 @@ function createWindow() {
 
   // Hide to tray on close instead of quitting — purge VRAM so GPU is freed while minimised
   win.on('close', (e) => {
-    if (!app.isQuiting) {
+    if (!(app as any).isQuiting) {
       e.preventDefault()
       cancelAndPurge().catch(() => {})
       win?.hide()
@@ -118,7 +118,7 @@ function createWindow() {
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL)
   } else {
-    win.loadFile(path.join(process.env.DIST, 'index.html'))
+    win.loadFile(path.join(process.env.DIST!, 'index.html'))
   }
 
   if (win) {
@@ -313,6 +313,11 @@ ipcMain.handle('ollama-service-stop', async () => {
 })
 
 app.whenReady().then(async () => {
+  if (process.argv.includes('--dry-run')) {
+    console.log('[Main] Dry-run confirmation: --dry-run detected. Exiting now.')
+    app.quit()
+    return
+  }
   await startComfyUI()
   createWindow()
   createTray()

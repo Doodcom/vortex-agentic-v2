@@ -1,14 +1,24 @@
-import { useState, useEffect, useRef, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
+import { useState, useEffect, useRef, useCallback, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
+import { createPortal } from 'react-dom'
 import { Home, Shield, Bell, Lightbulb, Camera, Power, Activity, ExternalLink, RefreshCw } from 'lucide-react'
 import { useTheme } from './ThemeProvider'
 import { notify } from '../lib/notifications'
+
+interface HAEntity {
+  entity_id: string
+  state: string
+  attributes: {
+    friendly_name?: string
+    [key: string]: unknown
+  }
+}
 
 export default function HomeView() {
   const { playSound } = useTheme()
   const [haIp, setHaIp] = useState(() => localStorage.getItem('vortex-ha-ip') || 'http://localhost:8123')
   const [haToken, setHaToken] = useState(() => localStorage.getItem('vortex-ha-token') || '')
   const [isHaConnected, setIsHaConnected] = useState(false)
-  const [entities, setEntities] = useState<any[]>([])
+  const [entities, setEntities] = useState<HAEntity[]>([])
   const [isLoadingEntities, setIsLoadingEntities] = useState(false)
   const [cameraPreviews, setCameraPreviews] = useState<Record<string, string>>({})
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null)
@@ -16,13 +26,7 @@ export default function HomeView() {
   const [liveRefreshKey, setLiveRefreshKey] = useState(0)
   const liveRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
-  useEffect(() => {
-    localStorage.setItem('vortex-ha-ip', haIp)
-    localStorage.setItem('vortex-ha-token', haToken)
-    checkHaConnection()
-  }, [haIp, haToken])
-
-  const fetchCameraPreview = async (entityId: string) => {
+  const fetchCameraPreview = useCallback(async (entityId: string) => {
     if (!haToken || !haIp) return
     try {
       const resp = await fetch(`${haIp}/api/camera_proxy/${entityId}`, {
@@ -35,30 +39,9 @@ export default function HomeView() {
     } catch (e) {
       console.error(`Failed to fetch preview for ${entityId}`, e)
     }
-  }
+  }, [haIp, haToken])
 
-  const checkHaConnection = async () => {
-    if (!haIp) return
-    try {
-      const controller = new AbortController()
-      const id = setTimeout(() => controller.abort(), 2000)
-      
-      const headers: any = { 'Content-Type': 'application/json' }
-      if (haToken) headers['Authorization'] = `Bearer ${haToken}`
-      
-      const resp = await fetch(`${haIp}/api/config`, { 
-        headers,
-        signal: controller.signal 
-      })
-      clearTimeout(id)
-      setIsHaConnected(resp.ok)
-      if (resp.ok && haToken) fetchEntities()
-    } catch (e) {
-      setIsHaConnected(false)
-    }
-  }
-
-  const fetchEntities = async () => {
+  const fetchEntities = useCallback(async () => {
     if (!haToken) return
     setIsLoadingEntities(true)
     try {
@@ -66,7 +49,7 @@ export default function HomeView() {
         headers: { 'Authorization': `Bearer ${haToken}` }
       })
       const data = await resp.json()
-      const filtered = data.filter((e: any) => 
+      const filtered = data.filter((e: HAEntity) => 
         e.entity_id.includes('ring') || 
         e.entity_id.includes('camera') ||
         e.entity_id.includes('light') ||
@@ -75,7 +58,7 @@ export default function HomeView() {
       setEntities(filtered)
 
       // Refresh camera previews
-      filtered.forEach((e: any) => {
+      filtered.forEach((e: HAEntity) => {
         if (e.entity_id.startsWith('camera.')) {
           fetchCameraPreview(e.entity_id)
         }
@@ -85,7 +68,37 @@ export default function HomeView() {
     } finally {
       setIsLoadingEntities(false)
     }
-  }
+  }, [haIp, haToken, fetchCameraPreview])
+
+  const checkHaConnection = useCallback(async () => {
+    if (!haIp) return
+    try {
+      const controller = new AbortController()
+      const id = setTimeout(() => controller.abort(), 2000)
+      
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' }
+      if (haToken) headers['Authorization'] = `Bearer ${haToken}`
+      
+      const resp = await fetch(`${haIp}/api/config`, { 
+        headers,
+        signal: controller.signal 
+      })
+      clearTimeout(id)
+      setIsHaConnected(resp.ok)
+      if (resp.ok && haToken) fetchEntities()
+    } catch {
+      setIsHaConnected(false)
+    }
+  }, [haIp, haToken, fetchEntities])
+
+  useEffect(() => {
+    localStorage.setItem('vortex-ha-ip', haIp)
+    localStorage.setItem('vortex-ha-token', haToken)
+    const runCheck = async () => {
+      await checkHaConnection()
+    }
+    runCheck()
+  }, [haIp, haToken, checkHaConnection])
 
   const handleToggleHA = async () => {
     playSound('click')
@@ -94,8 +107,8 @@ export default function HomeView() {
 
   const handleOpenExternal = (url: string) => {
     playSound('click')
-    if ((window as any).electron?.openExternal) {
-      (window as any).electron.openExternal(url)
+    if (window.electron?.openExternal) {
+      window.electron.openExternal(url)
     } else {
       window.open(url, '_blank')
     }
@@ -423,9 +436,9 @@ function LiveCameraOverlay({ entityId, haIp, haToken, onClose, onOpenExternal, l
       if (liveRefreshRef.current) clearInterval(liveRefreshRef.current)
     }
     return () => { if (liveRefreshRef.current) clearInterval(liveRefreshRef.current) }
-  }, [autoRefresh])
+  }, [autoRefresh, liveRefreshRef, setLiveRefreshKey])
 
-  return (
+  return createPortal(
     <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.9)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px' }}>
       <div style={{ position: 'relative', width: '100%', maxWidth: '1200px', height: '85vh', background: '#0d1525', borderRadius: '24px', border: '1px solid rgba(255,255,255,0.1)', overflow: 'hidden', display: 'flex', flexDirection: 'column', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)' }}>
         {/* Header */}
@@ -490,6 +503,7 @@ function LiveCameraOverlay({ entityId, haIp, haToken, onClose, onOpenExternal, l
           </span>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   )
 }

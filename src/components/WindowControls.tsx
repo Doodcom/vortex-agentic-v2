@@ -2,7 +2,7 @@ import { Minus, Square, X } from 'lucide-react'
 
 export default function WindowControls() {
   const control = (action: 'minimize' | 'maximize' | 'close') => {
-    (window as any).electron.windowControl(action)
+    window.electron.windowControl(action)
   }
 
   return (

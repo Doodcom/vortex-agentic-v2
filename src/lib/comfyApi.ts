@@ -2,6 +2,26 @@ export const COMFY_URL = "http://127.0.0.1:8188";
 
 export type LoraEntry = { name: string; modelStr: number; clipStr: number }
 
+export type ComfyInputValue =
+  | string
+  | number
+  | boolean
+  | [string, number]
+  | (string | number)[]
+  | string[]
+  | number[]
+  | Record<string, unknown>
+  | null
+  | undefined;
+
+
+export interface ComfyNode {
+  class_type?: string;
+  inputs: Record<string, ComfyInputValue>;
+}
+
+export type ComfyWorkflow = Record<string, ComfyNode>;
+
 export async function cancelGeneration(): Promise<void> {
   try {
     await fetch(`${COMFY_URL}/interrupt`, { method: 'POST' })
@@ -45,7 +65,7 @@ export async function getLoraNames(): Promise<string[]> {
   }
 }
 
-export async function queuePrompt(workflow: any, clientId: string) {
+export async function queuePrompt(workflow: ComfyWorkflow, clientId: string) {
   const resp = await fetch(`${COMFY_URL}/prompt`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -104,7 +124,7 @@ function resolveSeed(seed: number): number {
 }
 
 function applyLoras(
-  workflow: any,
+  workflow: ComfyWorkflow,
   loras: LoraEntry[],
   modelRef: [string, number],
   clipRef: [string, number],
@@ -142,7 +162,7 @@ export function createWorkflow(
   loras: LoraEntry[] = [],
   useFaceDetailer = false,
 ) {
-  const workflow: any = {
+  const workflow: ComfyWorkflow = {
     "3": {
       "inputs": {
         "seed": resolveSeed(seed), "steps": steps, "cfg": cfg,
@@ -203,7 +223,7 @@ export function createFluxWorkflow(
   width = 1024,
   height = 1024,
   seed = -1
-) {
+): ComfyWorkflow {
   // If the model is a UNet-only file (split FLUX setup like Krea-dev), build a
   // multi-loader workflow with separate T5+CLIP-L and VAE.
   if (isUnetModel(modelName)) {
@@ -239,7 +259,7 @@ export function createFluxSplitWorkflow(
   seed = -1,
   steps = 25,
   guidance = 3.5,
-) {
+): ComfyWorkflow {
   return {
     "1": { "inputs": { "unet_name": unetName, "weight_dtype": "default" }, "class_type": "UNETLoader" },
     "2": {
@@ -279,7 +299,7 @@ export function createFluxImg2ImgWorkflow(
   seed = -1,
   steps = 25,
   guidance = 3.5,
-) {
+): ComfyWorkflow {
   if (isUnetModel(modelName)) {
     const unetName = stripUnetTag(modelName)
     return {
@@ -338,13 +358,13 @@ export function createFluxControlNetWorkflow(
   steps = 25,
   guidance = 3.5,
   strength = 0.6,
-) {
+): ComfyWorkflow {
   const preprocessorClass =
     controlType === 'canny' ? 'CannyEdgePreprocessor' :
-    controlType === 'pose'  ? 'OpenposePreprocessor' :
+    controlType === 'openpose'  ? 'OpenposePreprocessor' :
                               'DepthAnythingPreprocessor'
 
-  const baseLoaders: any = isUnetModel(modelName)
+  const baseLoaders: ComfyWorkflow = isUnetModel(modelName)
     ? {
         "1": { "inputs": { "unet_name": stripUnetTag(modelName), "weight_dtype": "default" }, "class_type": "UNETLoader" },
         "2": { "inputs": { "clip_name1": "t5xxl_fp16.safetensors", "clip_name2": "clip_l.safetensors", "type": "flux" }, "class_type": "DualCLIPLoader" },
@@ -401,7 +421,7 @@ export function createFluxFillWorkflow(
   seed = -1,
   steps = 30,
   guidance = 30,
-) {
+): ComfyWorkflow {
   return {
     "1": { "inputs": { "unet_name": fillModelName, "weight_dtype": "default" }, "class_type": "UNETLoader" },
     "2": { "inputs": { "clip_name1": "t5xxl_fp16.safetensors", "clip_name2": "clip_l.safetensors", "type": "flux" }, "class_type": "DualCLIPLoader" },
@@ -444,7 +464,7 @@ export function createImg2ImgWorkflow(
   scheduler = 'karras',
   loras: LoraEntry[] = []
 ) {
-  const workflow: any = {
+  const workflow: ComfyWorkflow = {
     "3": {
       "inputs": {
         "seed": resolveSeed(seed), "steps": steps, "cfg": cfg,
@@ -486,7 +506,7 @@ export function createControlNetWorkflow(
   scheduler = 'karras',
   loras: LoraEntry[] = []
 ) {
-  const workflow: any = {
+  const workflow: ComfyWorkflow = {
     "3": {
       "inputs": {
         "seed": resolveSeed(seed), "steps": steps, "cfg": cfg,
@@ -546,7 +566,7 @@ export function createControlNetWorkflow(
   return workflow;
 }
 
-export function createUpscaleWorkflow(imageFilename: string, upscaleModel = "4x-UltraSharp.pth") {
+export function createUpscaleWorkflow(imageFilename: string, upscaleModel = "4x-UltraSharp.pth"): ComfyWorkflow {
   return {
     "1": { "inputs": { "image": imageFilename, "upload": "image" }, "class_type": "LoadImage" },
     "2": { "inputs": { "model_name": upscaleModel }, "class_type": "UpscaleModelLoader" },
@@ -568,7 +588,7 @@ export function createVideoWorkflow(
   useRife = false,
   rifeMultiplier = 5
 ) {
-  const workflow: any = {
+  const workflow: ComfyWorkflow = {
     "3": { "inputs": { "ckpt_name": modelName }, "class_type": "CheckpointLoaderSimple" },
     "4": { "inputs": { "text": prompt, "clip": ["3", 1] }, "class_type": "CLIPTextEncode" },
     "5": { "inputs": { "text": negativePrompt, "clip": ["3", 1] }, "class_type": "CLIPTextEncode" },
@@ -634,7 +654,7 @@ export function createI2VWorkflow(
   width = 768,
   height = 768,
 ) {
-  const workflow: any = {
+  const workflow: ComfyWorkflow = {
     "3": { "inputs": { "ckpt_name": modelName }, "class_type": "CheckpointLoaderSimple" },
     "4": { "inputs": { "text": prompt, "clip": ["3", 1] }, "class_type": "CLIPTextEncode" },
     "5": { "inputs": { "text": negativePrompt, "clip": ["3", 1] }, "class_type": "CLIPTextEncode" },
@@ -701,7 +721,7 @@ export function createV2VWorkflow(
   useRife = false,
   rifeMultiplier = 5
 ) {
-  const workflow: any = {
+  const workflow: ComfyWorkflow = {
     "1": {
       "inputs": {
         "video": videoFilename, "force_rate": fps, "force_size": "Disabled",
@@ -776,7 +796,7 @@ export function createWanWorkflow(
   rifeMultiplier = 2,
 ) {
   const seed = Math.floor(Math.random() * 1_000_000_000)
-  const workflow: any = {
+  const workflow: ComfyWorkflow = {
     "BS": {
       // Streams 20 transformer blocks between VRAM and CPU during inference.
       // Required to fit the 14B FP8 model on a 16GB card. Slower but works.
@@ -874,7 +894,7 @@ export function createWanI2VWorkflow(
   rifeMultiplier = 2,
 ) {
   const seed = Math.floor(Math.random() * 1_000_000_000)
-  const workflow: any = {
+  const workflow: ComfyWorkflow = {
     "BS": {
       "inputs": {
         "blocks_to_swap": 38, "offload_img_emb": true, "offload_txt_emb": true,

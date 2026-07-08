@@ -5,9 +5,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { VORTEX_MODELS, DEFAULT_MODEL } from '../lib/models'
 import { notify } from '../lib/notifications'
 
-export const ALERT_THRESHOLDS_KEY = 'vortex-alert-thresholds'
-export interface AlertThresholds { cpu: number; ram: number; gpu: number }
-export const DEFAULT_THRESHOLDS: AlertThresholds = { cpu: 90, ram: 90, gpu: 95 }
+import { ALERT_THRESHOLDS_KEY, DEFAULT_THRESHOLDS, type AlertThresholds } from '../lib/alerts'
 
 const COLOR_THEMES: { id: ThemeType; label: string; color: string }[] = [
   { id: 'vortex-red',    label: 'Red',    color: '#ef4444' },
@@ -27,8 +25,8 @@ function Toggle({ enabled, onChange, label, sublabel, icon: Icon, offIcon: OffIc
   onChange: (v: boolean) => void
   label: string
   sublabel: string
-  icon: any
-  offIcon: any
+  icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>
+  offIcon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>
 }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 0', borderBottom: '1px solid rgba(255,255,255,0.04)' }}>
@@ -175,28 +173,28 @@ export default function SettingsPage() {
   const [newFact, setNewFact] = useState('')
 
   useEffect(() => {
-    const el = (window as any).electron
+    const el = window.electron
     if (!el?.memoryGetAll) return
     el.memoryGetAll().then(setMemories)
   }, [])
 
   const addMemory = async () => {
     if (!newFact.trim()) return
-    await (window as any).electron?.memoryAdd(newFact.trim())
+    await window.electron?.memoryAdd(newFact.trim())
     setNewFact('')
-    const rows = await (window as any).electron?.memoryGetAll()
-    setMemories(rows)
+    const rows = await window.electron?.memoryGetAll()
+    if (rows) setMemories(rows)
     playSound('success')
   }
 
   const deleteMemory = async (id: number) => {
-    await (window as any).electron?.memoryDelete(id)
+    await window.electron?.memoryDelete(id)
     setMemories(prev => prev.filter(m => m.id !== id))
     playSound('click')
   }
 
   const clearMemories = async () => {
-    await (window as any).electron?.memoryClear()
+    await window.electron?.memoryClear()
     setMemories([])
     playSound('click')
   }

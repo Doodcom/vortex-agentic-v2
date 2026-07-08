@@ -46,6 +46,7 @@ export default function StartupView() {
   const [addExec, setAddExec] = useState('')
   const [addComment, setAddComment] = useState('')
   const [addLoading, setAddLoading] = useState(false)
+  const [availableApps, setAvailableApps] = useState<{name: string, exec: string, comment: string}[]>([])
 
   const load = useCallback(async () => {
     const el = (window as any).electron
@@ -55,6 +56,12 @@ export default function StartupView() {
       const res = await el.startupList()
       setDesktopEntries(res.desktopEntries)
       setSystemdServices(res.systemdServices)
+      if (el.appsList) {
+        const appsRes = await el.appsList()
+        if (appsRes.success) {
+          setAvailableApps(appsRes.apps)
+        }
+      }
     } finally {
       setLoading(false)
     }
@@ -173,6 +180,25 @@ export default function StartupView() {
               <div style={{ padding: '16px 18px', display: 'flex', flexDirection: 'column', gap: '10px', background: 'rgba(239,68,68,0.03)' }}>
                 <span style={{ ...labelStyle, color: '#52525b' }}>New Autostart Entry</span>
                 <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+                  <div style={{ flex: '1 1 100%', display: 'flex', flexDirection: 'column', gap: '4px', marginBottom: '8px' }}>
+                    <span style={{ fontSize: '8px', fontFamily: 'monospace', color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Select Existing App (Optional)</span>
+                    <select
+                      onChange={(e) => {
+                        const app = availableApps.find(a => a.name === e.target.value)
+                        if (app) {
+                          setAddName(app.name)
+                          setAddExec(app.exec)
+                          setAddComment(app.comment || '')
+                        }
+                      }}
+                      style={{ padding: '6px 10px', borderRadius: '6px', background: 'rgba(255,255,255,0.04)', border: '1px solid rgba(255,255,255,0.08)', color: '#f4f4f5', fontSize: '11px', fontFamily: 'monospace', outline: 'none' }}
+                    >
+                      <option value="">-- Choose an app --</option>
+                      {availableApps.map(app => (
+                        <option key={app.name} value={app.name}>{app.name}</option>
+                      ))}
+                    </select>
+                  </div>
                   <div style={{ flex: '1 1 160px', display: 'flex', flexDirection: 'column', gap: '4px' }}>
                     <span style={{ fontSize: '8px', fontFamily: 'monospace', color: '#52525b', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Name *</span>
                     <input

@@ -1,8 +1,9 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo, useRef, useLayoutEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Brain, Trash2, Plus, Search, ShieldAlert, Check, X } from 'lucide-react'
+import { Brain, Trash2, Plus, Search, ShieldAlert, Check, X, Network as NetworkIcon, List as ListIcon } from 'lucide-react'
 import { notify } from '../lib/notifications'
 import { useTheme } from './ThemeProvider'
+import ForceGraph3D from 'react-force-graph-3d'
 
 interface MemoryFact {
   id: number
@@ -17,6 +18,23 @@ export default function MemoryView() {
   const [search, setSearch] = useState('')
   const [newFact, setNewFact] = useState('')
   const [isAdding, setIsAdding] = useState(false)
+  const [viewMode, setViewMode] = useState<'list' | 'graph'>('graph')
+  const containerRef = useRef<HTMLDivElement>(null)
+  const [dimensions, setDimensions] = useState({ width: 800, height: 400 })
+
+  useLayoutEffect(() => {
+    if (containerRef.current) {
+      const { clientWidth, clientHeight } = containerRef.current
+      setDimensions({ width: clientWidth, height: clientHeight || 400 })
+    }
+    const handleResize = () => {
+      if (containerRef.current) {
+        setDimensions({ width: containerRef.current.clientWidth, height: containerRef.current.clientHeight || 400 })
+      }
+    }
+    window.addEventListener('resize', handleResize)
+    return () => window.removeEventListener('resize', handleResize)
+  }, [viewMode])
 
   const loadMemories = async () => {
     if (!(window as any).electron) return
@@ -79,6 +97,18 @@ export default function MemoryView() {
 
   const filtered = memories.filter(m => m.fact.toLowerCase().includes(search.toLowerCase()))
 
+  const graphData = useMemo(() => {
+    const nodes: any[] = [{ id: 'core', name: 'AI Neural Core', val: 5, color: '#a855f7' }]
+    const links: any[] = []
+    
+    // Group facts by some basic keyword heuristic for clustering
+    filtered.forEach(m => {
+      nodes.push({ id: m.id.toString(), name: m.fact, val: 1, color: '#d4d4d8' })
+      links.push({ source: 'core', target: m.id.toString(), color: 'rgba(168,85,247,0.2)' })
+    })
+    return { nodes, links }
+  }, [filtered])
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '24px', height: '100%' }}>
       
@@ -116,6 +146,22 @@ export default function MemoryView() {
             }}
           />
         </div>
+        
+        <div style={{ display: 'flex', background: 'rgba(255,255,255,0.05)', borderRadius: '10px', padding: '4px' }}>
+          <button
+            onClick={() => setViewMode('list')}
+            style={{ padding: '6px 12px', borderRadius: '6px', background: viewMode === 'list' ? 'rgba(255,255,255,0.1)' : 'transparent', color: viewMode === 'list' ? '#fff' : '#71717a', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            <ListIcon size={14} /> <span style={{ fontSize: '11px', fontFamily: 'monospace' }}>List</span>
+          </button>
+          <button
+            onClick={() => setViewMode('graph')}
+            style={{ padding: '6px 12px', borderRadius: '6px', background: viewMode === 'graph' ? 'rgba(168,85,247,0.2)' : 'transparent', color: viewMode === 'graph' ? '#a855f7' : '#71717a', border: 'none', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px' }}
+          >
+            <NetworkIcon size={14} /> <span style={{ fontSize: '11px', fontFamily: 'monospace' }}>3D Graph</span>
+          </button>
+        </div>
+
         <button
           onClick={() => setIsAdding(true)}
           style={{ padding: '10px 20px', borderRadius: '10px', background: 'rgba(168,85,247,0.2)', border: '1px solid rgba(168,85,247,0.3)', color: '#a855f7', fontSize: '11px', fontFamily: 'monospace', textTransform: 'uppercase', cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '8px' }}
@@ -150,33 +196,50 @@ export default function MemoryView() {
         )}
       </AnimatePresence>
 
-      {/* List */}
-      <div style={{ flex: 1, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', paddingBottom: '40px' }}>
+      {/* Content Area */}
+      <div style={{ flex: 1, minHeight: 0, position: 'relative' }}>
         {loading ? (
           <div style={{ textAlign: 'center', opacity: 0.3, padding: '40px', fontFamily: 'monospace', fontSize: '12px' }}>Synchronizing neural buffers...</div>
         ) : filtered.length === 0 ? (
           <div style={{ textAlign: 'center', opacity: 0.1, padding: '80px', fontFamily: 'monospace', fontSize: '12px' }}>No persistent patterns detected.</div>
-        ) : (
-          filtered.map(m => (
-            <motion.div
-              layout
-              key={m.id}
-              className="v-card"
-              style={{ padding: '14px 20px', display: 'flex', alignItems: 'center', gap: '16px' }}
-            >
-              <div style={{ width: '4px', height: '24px', background: 'var(--crimson)', borderRadius: '2px', opacity: 0.5 }} />
-              <div style={{ flex: 1, fontSize: '13px', color: '#d4d4d8', lineHeight: 1.5 }}>{m.fact}</div>
-              <div style={{ fontSize: '10px', color: '#3f3f46', fontFamily: 'monospace' }}>{new Date(m.created_at * 1000).toLocaleDateString()}</div>
-              <button
-                onClick={() => handleDelete(m.id)}
-                style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3f3f46', padding: '6px', borderRadius: '6px', transition: 'all 0.2s' }}
-                onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--crimson)'; (e.currentTarget as HTMLButtonElement).style.background = 'rgba(239,68,68,0.1)' }}
-                onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#3f3f46'; (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
+        ) : viewMode === 'list' ? (
+          <div style={{ height: '100%', overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: '12px', paddingBottom: '40px' }}>
+            {filtered.map(m => (
+              <motion.div
+                layout
+                key={m.id}
+                className="v-card"
+                style={{ padding: '14px 20px', display: 'flex', alignItems: 'center', gap: '16px' }}
               >
-                <Trash2 size={14} />
-              </button>
-            </motion.div>
-          ))
+                <div style={{ width: '4px', height: '24px', background: 'var(--crimson)', borderRadius: '2px', opacity: 0.5 }} />
+                <div style={{ flex: 1, fontSize: '13px', color: '#d4d4d8', lineHeight: 1.5 }}>{m.fact}</div>
+                <div style={{ fontSize: '10px', color: '#3f3f46', fontFamily: 'monospace' }}>{new Date(m.created_at * 1000).toLocaleDateString()}</div>
+                <button
+                  onClick={() => handleDelete(m.id)}
+                  style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3f3f46', padding: '6px', borderRadius: '6px', transition: 'all 0.2s' }}
+                  onMouseEnter={e => { (e.currentTarget as HTMLButtonElement).style.color = 'var(--crimson)'; (e.currentTarget as HTMLButtonElement).style.background = 'rgba(239,68,68,0.1)' }}
+                  onMouseLeave={e => { (e.currentTarget as HTMLButtonElement).style.color = '#3f3f46'; (e.currentTarget as HTMLButtonElement).style.background = 'none' }}
+                >
+                  <Trash2 size={14} />
+                </button>
+              </motion.div>
+            ))}
+          </div>
+        ) : (
+          <div ref={containerRef} style={{ width: '100%', height: '100%', background: 'rgba(0,0,0,0.2)', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.05)', overflow: 'hidden' }}>
+            <ForceGraph3D
+              width={dimensions.width}
+              height={dimensions.height}
+              graphData={graphData}
+              nodeLabel="name"
+              nodeColor="color"
+              linkColor="color"
+              backgroundColor="rgba(0,0,0,0)"
+              nodeResolution={16}
+              linkWidth={1}
+              showNavInfo={false}
+            />
+          </div>
         )}
       </div>
     </div>

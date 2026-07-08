@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { RefreshCcw, Package, ShieldCheck, AlertTriangle, Loader2, ChevronRight, Brain } from 'lucide-react'
+import { RefreshCcw, Package, ShieldCheck, AlertTriangle, Loader2, ChevronRight, Brain, Cpu } from 'lucide-react'
 import { notify } from '../lib/notifications'
 
 export default function UpdatesView() {
@@ -8,6 +8,8 @@ export default function UpdatesView() {
   const [isChecking, setIsChecking] = useState(false)
   const [isUpgrading, setIsUpgrading] = useState(false)
   const [isSyncingAI, setIsSyncingAI] = useState(false)
+  const [firmware, setFirmware] = useState<{ available: boolean; updates: { device: string; current: string; version?: string; summary: string }[] }>({ available: true, updates: [] })
+  const [isFlashing, setIsFlashing] = useState(false)
   const [lastChecked, setLastChecked] = useState<Date | null>(null)
   const [upgradeLog, setUpgradeLog] = useState<string[]>([])
   const logEndRef = useRef<HTMLDivElement>(null)
@@ -22,6 +24,28 @@ export default function UpdatesView() {
       console.error('Failed to check updates:', e)
     } finally {
       setIsChecking(false)
+    }
+    // Firmware runs on its own channel (fwupd/LVFS) — don't block package scan
+    try {
+      const fw = await (window as any).electron.systemCheckFirmware()
+      setFirmware(fw)
+    } catch (e) {
+      console.error('Failed to check firmware:', e)
+    }
+  }
+
+  const handleFirmwareUpdate = async () => {
+    setIsFlashing(true)
+    setUpgradeLog(['> Initializing device firmware flash via fwupd...'])
+    try {
+      const res = await (window as any).electron.systemFirmwareUpdate()
+      setUpgradeLog(prev => [...prev, `> ${res.log}`])
+      notify('Firmware', res.success ? 'Firmware update finished' : 'Firmware update failed', res.success ? 'success' : 'error')
+      if (res.success) await checkUpdates()
+    } catch (e: any) {
+      setUpgradeLog(prev => [...prev, `> Fatal: ${e.message}`])
+    } finally {
+      setIsFlashing(false)
     }
   }
 
@@ -172,7 +196,38 @@ export default function UpdatesView() {
         </button>
       </div>
 
-      {(totalUpdates > 0 || isUpgrading || isSyncingAI) && (
+      {/* Device Firmware Section (fwupd) */}
+      <div className="v-card" style={{ marginTop: '20px', padding: '24px', display: 'flex', alignItems: 'center', gap: '20px', background: 'rgba(59,130,246,0.05)', border: '1px solid rgba(59,130,246,0.1)' }}>
+        <div style={{ width: '40px', height: '40px', borderRadius: '12px', background: 'rgba(59,130,246,0.1)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#3b82f6' }}>
+          <Cpu size={20} />
+        </div>
+        <div style={{ flex: 1 }}>
+          <h3 style={{ fontSize: '12px', fontWeight: 'bold', textTransform: 'uppercase', margin: 0, color: '#f4f4f5' }}>Device Firmware</h3>
+          <p style={{ margin: '4px 0 0 0', fontSize: '11px', color: '#71717a' }}>
+            {!firmware.available
+              ? 'fwupd not installed — install it to manage Secure Boot, SSD and peripheral firmware via LVFS.'
+              : firmware.updates.length === 0
+                ? 'Secure Boot (dbx), SSD and peripheral firmware via LVFS — all up to date. Note: only covers vendors on LVFS; many motherboard BIOSes (e.g. Gigabyte) are not, so flash those manually via the vendor tool (Q-Flash).'
+                : firmware.updates.map(u => `${u.device} → ${u.version || 'new'}`).join(' · ')}
+          </p>
+        </div>
+        <button
+          onClick={handleFirmwareUpdate}
+          disabled={!firmware.available || firmware.updates.length === 0 || isFlashing || isUpgrading || isSyncingAI}
+          style={{
+            padding: '10px 20px',
+            background: firmware.updates.length > 0 ? 'rgba(59,130,246,0.15)' : 'rgba(255,255,255,0.03)',
+            border: `1px solid ${firmware.updates.length > 0 ? 'rgba(59,130,246,0.3)' : 'var(--border)'}`,
+            borderRadius: '12px', color: firmware.updates.length > 0 ? '#3b82f6' : '#52525b', fontSize: '11px', fontWeight: 'bold',
+            textTransform: 'uppercase', letterSpacing: '0.08em',
+            cursor: (!firmware.available || firmware.updates.length === 0 || isFlashing) ? 'not-allowed' : 'pointer'
+          }}
+        >
+          {isFlashing ? 'Flashing...' : firmware.updates.length > 0 ? `Update ${firmware.updates.length}` : 'No Firmware'}
+        </button>
+      </div>
+
+      {(totalUpdates > 0 || isUpgrading || isSyncingAI || isFlashing) && (
         <motion.div 
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}

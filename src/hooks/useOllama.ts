@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
 import { notify } from '../lib/notifications'
 import { VORTEX_MODELS, DEFAULT_MODEL, VISION_MODELS } from '../lib/models'
+import type { PullProgress, TokenUsage, OrchAgentEvent, AgentStepEvent, OllamaMessage } from '../types/electron'
 
 export interface Session {
   id: number
@@ -9,8 +10,41 @@ export interface Session {
   updated_at: number
 }
 
+export interface OllamaUiModel {
+  name: string;
+  size: number;
+  label: string;
+  installed?: boolean;
+}
+
+export interface ToolStepMessage {
+  role: 'tool_step';
+  stepId: number;
+  name: string;
+  args?: unknown;
+  result?: string;
+  content: string;
+}
+
+export interface OrchAgentMessage {
+  role: 'orch_agent';
+  agentId: number;
+  agentRole: string;
+  status: 'working' | 'done';
+  output?: string;
+  content: string;
+}
+
+export interface ChatMessage {
+  role: 'user' | 'assistant' | 'system';
+  content: string;
+  images?: string[];
+}
+
+export type OllamaUiMessage = ChatMessage | ToolStepMessage | OrchAgentMessage;
+
 export function useOllama() {
-  const [models, setModels] = useState<any[]>(VORTEX_MODELS)
+  const [models, setModels] = useState<OllamaUiModel[]>(VORTEX_MODELS)
   const [activeModel, setActiveModelState] = useState<string>(() => {
     const saved = localStorage.getItem('vortex-default-model')
     // Embedding-only models can't do chat — reject them on load.
@@ -39,11 +73,11 @@ export function useOllama() {
   const [currentSessionId, setCurrentSessionId] = useState<number | null>(null)
   const currentSessionIdRef                     = useRef<number | null>(null)
 
-  const [messages, setMessages]     = useState<any[]>([])
+  const [messages, setMessages]     = useState<OllamaUiMessage[]>([])
   const [isStreaming, setIsStreaming] = useState(false)
   const [error, setError]           = useState<string | null>(null)
   const [pullProgress, setPullProgress] = useState<{ status: string; percent: number } | null>(null)
-  const [tokenUsage, setTokenUsage] = useState<{ promptTokens: number; completionTokens: number } | null>(null)
+  const [tokenUsage, setTokenUsage] = useState<TokenUsage | null>(null)
   const [smartRoute, setSmartRouteState] = useState(() => localStorage.getItem('vortex-smart-route') === 'true')
   const [lastRoutedModel, setLastRoutedModel] = useState('')
   const [agentMode, setAgentModeState] = useState(() => localStorage.getItem('vortex-agent-mode') === 'true')
@@ -71,7 +105,7 @@ export function useOllama() {
     localStorage.setItem('vortex-think-mode', String(v))
   }
 
-  function pickModel(content: string, baseModel: string): string {
+  const pickModel = useCallback((content: string, baseModel: string): string => {
     if (!smartRoute || models.length < 2) return baseModel
     const COMPLEX = [
       /\b(write|create|implement|build|code|program|script|class|function|refactor|debug|fix|analyze|compare|design|architect|generate)\b/i,
@@ -82,7 +116,7 @@ export function useOllama() {
     // Route to smallest available model for simple queries
     const small = models.find(m => /1b|3b|7b|8b/i.test(m.name) && m.name !== baseModel)
     return small?.name ?? baseModel
-  }
+  }, [smartRoute, models])
 
   // Keep ref in sync so the IPC done-handler always has the latest id
   useEffect(() => {
@@ -95,42 +129,42 @@ export function useOllama() {
 
   // ── Session helpers ──────────────────────────────────────────────────────────
   const refreshSessions = useCallback(async () => {
-    if (!(window as any).electron) return
-    const rows: Session[] = await (window as any).electron.dbGetSessions()
+    if (!window.electron) return
+    const rows: Session[] = await window.electron.dbGetSessions()
     setSessions(rows)
     return rows
   }, [])
 
   const loadSession = useCallback(async (id: number) => {
-    if (!(window as any).electron) return
-    const rows = await (window as any).electron.dbGetMessages(id)
-    setMessages(rows.length > 0 ? rows : [])
+    if (!window.electron) return
+    const rows = await window.electron.dbGetMessages(id)
+    setMessages(rows.length > 0 ? (rows as unknown as OllamaUiMessage[]) : [])
     setCurrentSessionId(id)
   }, [])
 
   const createSession = useCallback(async (name = 'New Chat') => {
-    if (!(window as any).electron) return null
-    const sess = await (window as any).electron.dbCreateSession(name)
+    if (!window.electron) return null
+    const sess = await window.electron.dbCreateSession(name)
     await refreshSessions()
     await loadSession(sess.id)
     return sess as Session
   }, [refreshSessions, loadSession])
 
   const renameSession = useCallback(async (id: number, name: string) => {
-    if (!(window as any).electron) return
-    await (window as any).electron.dbRenameSession({ id, name })
+    if (!window.electron) return
+    await window.electron.dbRenameSession({ id, name })
     await refreshSessions()
   }, [refreshSessions])
 
   const deleteSession = useCallback(async (id: number) => {
-    if (!(window as any).electron) return
-    await (window as any).electron.dbDeleteSession(id)
-    const rows = await refreshSessions() as Session[] | undefined
+    if (!window.electron) return
+    await window.electron.dbDeleteSession(id)
+    const rows = await refreshSessions()
     if (rows && rows.length > 0) {
       await loadSession(rows[0].id)
     } else {
       // No sessions left — create a fresh default
-      const sess = await (window as any).electron.dbCreateSession('New Chat')
+      const sess = await window.electron.dbCreateSession('New Chat')
       await refreshSessions()
       await loadSession(sess.id)
     }
@@ -138,16 +172,18 @@ export function useOllama() {
 
   // ── Init ─────────────────────────────────────────────────────────────────────
   const fetchModels = useCallback(async () => {
-    if (!(window as any).electron) {
+    if (!window.electron) {
+      // Yield to microtask queue to avoid synchronous state update in useEffect execution
+      await Promise.resolve()
       setModels(VORTEX_MODELS.map(m => ({ ...m, installed: true })))
       return
     }
     try {
-      const list = await (window as any).electron.ollamaListModels()
+      const list = await window.electron.ollamaListModels()
       
       // Map our professional tier labels to what is actually installed
       const merged = VORTEX_MODELS.map(vm => {
-        const found = list.find((m: any) => m.name === vm.name)
+        const found = list.find((m) => m.name === vm.name)
         return {
           ...vm,
           size: found ? found.size : vm.size,
@@ -158,8 +194,8 @@ export function useOllama() {
       // Also include models that are installed but NOT in our VORTEX_MODELS list.
       // Use the full tagged name as the label so we don't get duplicate "qwen2.5-coder" entries.
       const others = list
-        .filter((m: any) => !VORTEX_MODELS.some(vm => vm.name === m.name))
-        .map((m: any) => ({
+        .filter((m) => !VORTEX_MODELS.some(vm => vm.name === m.name))
+        .map((m) => ({
           name: m.name,
           size: m.size,
           label: m.name.replace(':latest', ''),
@@ -173,25 +209,33 @@ export function useOllama() {
   }, [])
 
   useEffect(() => {
-    fetchModels()
-    if (!(window as any).electron) return
+    const timer = setTimeout(() => {
+      fetchModels()
+    }, 0)
+
+    if (!window.electron) {
+      return () => clearTimeout(timer)
+    }
+
     ;(async () => {
-      const rows: Session[] = await (window as any).electron.dbGetSessions()
+      const rows: Session[] = await window.electron.dbGetSessions()
       setSessions(rows)
       if (rows.length > 0) {
         await loadSession(rows[0].id)
       } else {
         // First launch — create default session
-        const sess = await (window as any).electron.dbCreateSession('New Chat')
-        setSessions([sess])
+        const sess = await window.electron.dbCreateSession('New Chat')
+        setSessions([{ ...sess, created_at: Date.now(), updated_at: Date.now() }])
         setCurrentSessionId(sess.id)
       }
     })()
-  }, [])
+
+    return () => clearTimeout(timer)
+  }, [fetchModels, loadSession])
 
   // ── Streaming IPC listeners ───────────────────────────────────────────────
   useEffect(() => {
-    if (!(window as any).electron) return
+    if (!window.electron) return
 
     const handleToken = (token: string) => {
       currentResponseRef.current += token
@@ -204,7 +248,7 @@ export function useOllama() {
       })
     }
 
-    const handlePullProgress = (data: any) => {
+    const handlePullProgress = (data: PullProgress) => {
       if (data.status.includes('success')) {
         setPullProgress(null)
         fetchModels()
@@ -217,8 +261,8 @@ export function useOllama() {
 
     const handleDone = () => {
       const sid = currentSessionIdRef.current
-      if ((window as any).electron && currentResponseRef.current) {
-        (window as any).electron.dbSaveMessage({
+      if (window.electron && currentResponseRef.current) {
+        window.electron.dbSaveMessage({
           role: 'assistant',
           content: currentResponseRef.current,
           sessionId: sid ?? undefined
@@ -233,60 +277,60 @@ export function useOllama() {
       setIsStreaming(false)
     }
 
-    const handleTokenUsage = (data: { promptTokens: number; completionTokens: number }) => {
+    const handleTokenUsage = (data: TokenUsage) => {
       setTokenUsage(data)
       window.dispatchEvent(new CustomEvent('vortex-token-usage', { detail: data }))
     }
 
-    const handleOrchAgent = (data: { agentId: number; role: string; status: 'working' | 'done'; output?: string }) => {
+    const handleOrchAgent = (data: OrchAgentEvent) => {
       setMessages(prev => {
-        const idx = prev.findIndex((m: any) => m.role === 'orch_agent' && m.agentId === data.agentId)
-        const updated = { role: 'orch_agent', agentId: data.agentId, agentRole: data.role, status: data.status, output: data.output }
-        if (idx >= 0) return prev.map((m: any, i: number) => i === idx ? updated : m)
+        const idx = prev.findIndex((m) => m.role === 'orch_agent' && (m as OrchAgentMessage).agentId === data.agentId)
+        const updated: OrchAgentMessage = { role: 'orch_agent', agentId: data.agentId, agentRole: data.role, status: data.status, output: data.output, content: '' }
+        if (idx >= 0) return prev.map((m, i: number) => i === idx ? updated : m)
         const last = prev[prev.length - 1]
         if (last?.role === 'assistant') return [...prev.slice(0, -1), updated, last]
         return [...prev, updated]
       })
     }
 
-    const handleAgentStep = (data: { type: 'call' | 'result'; name: string; args?: any; result?: string; stepId: number }) => {
+    const handleAgentStep = (data: AgentStepEvent) => {
       if (data.type === 'call') {
         setMessages(prev => {
           const last = prev[prev.length - 1]
-          const step = { role: 'tool_step' as const, stepId: data.stepId, name: data.name, args: data.args }
+          const step: ToolStepMessage = { role: 'tool_step', stepId: data.stepId, name: data.name, args: data.args, content: '' }
           if (last?.role === 'assistant') return [...prev.slice(0, -1), step, last]
           return [...prev, step]
         })
       } else {
-        setMessages(prev => prev.map((m: any) =>
-          m.role === 'tool_step' && m.stepId === data.stepId ? { ...m, result: data.result } : m
+        setMessages(prev => prev.map((m) =>
+          m.role === 'tool_step' && (m as ToolStepMessage).stepId === data.stepId ? { ...m, result: data.result } : m
         ))
       }
     }
 
-    ;(window as any).electron.on('ollama-token', handleToken)
-    ;(window as any).electron.on('ollama-done', handleDone)
-    ;(window as any).electron.on('ollama-error', handleError)
-    ;(window as any).electron.on('ollama-pull-progress', handlePullProgress)
-    ;(window as any).electron.on('ollama-agent-step', handleAgentStep)
-    ;(window as any).electron.on('ollama-token-usage', handleTokenUsage)
-    ;(window as any).electron.on('ollama-orch-agent', handleOrchAgent)
+    const unsubToken = window.electron.on('ollama-token', handleToken)
+    const unsubDone = window.electron.on('ollama-done', handleDone)
+    const unsubError = window.electron.on('ollama-error', handleError)
+    const unsubPull = window.electron.on('ollama-pull-progress', handlePullProgress)
+    const unsubAgentStep = window.electron.on('ollama-agent-step', handleAgentStep)
+    const unsubTokenUsage = window.electron.on('ollama-token-usage', handleTokenUsage)
+    const unsubOrchAgent = window.electron.on('ollama-orch-agent', handleOrchAgent)
 
     return () => {
-      ;(window as any).electron.removeListener('ollama-token')
-      ;(window as any).electron.removeListener('ollama-done')
-      ;(window as any).electron.removeListener('ollama-error')
-      ;(window as any).electron.removeListener('ollama-pull-progress')
-      ;(window as any).electron.removeListener('ollama-agent-step')
-      ;(window as any).electron.removeListener('ollama-token-usage')
-      ;(window as any).electron.removeListener('ollama-orch-agent')
+      unsubToken()
+      unsubDone()
+      unsubError()
+      unsubPull()
+      unsubAgentStep()
+      unsubTokenUsage()
+      unsubOrchAgent()
     }
   }, [fetchModels])
 
   // ── Send ────────────────────────────────────────────────────────────────────
   const sendMessage = useCallback(async (content: string, images?: string[]) => {
     if (!content.trim() && (!images || images.length === 0)) return
-    if (isStreaming || !(window as any).electron) return
+    if (isStreaming || !window.electron) return
 
     setError(null)
     setIsStreaming(true)
@@ -296,12 +340,12 @@ export function useOllama() {
     const apiContent = isQwen3
       ? `${content}${content.endsWith(' ') ? '' : ' '}${thinkMode ? '/think' : '/no_think'}`
       : content
-    const userMsg = { role: 'user', content, images }
+    const userMsg: ChatMessage = { role: 'user', content, images }
     const newMessages = [...messages, userMsg]
     setMessages(newMessages)
 
     const sid = currentSessionIdRef.current
-    ;(window as any).electron.dbSaveMessage({ role: 'user', content, sessionId: sid ?? undefined })
+    window.electron.dbSaveMessage({ role: 'user', content, sessionId: sid ?? undefined })
 
     if (messages.length === 0 && sid !== null) {
       await renameSession(sid, content.slice(0, 40).replace(/\n/g, ' '))
@@ -314,18 +358,27 @@ export function useOllama() {
     // Full history stays in UI; only the API call sees the trimmed window
     // 128k chars is roughly 32k tokens, ideal for 14B/30B models on high-end hardware.
     const MAX_CONTEXT_CHARS = 128000
-    let apiMessages = newMessages.filter((m: any) => m.role !== 'tool_step')
+    let apiMessages: OllamaUiMessage[] = newMessages.filter((m) => m.role !== 'tool_step')
     // Swap last user turn for the /think-suffixed variant — keeps original in UI.
     if (apiContent !== content && apiMessages.length > 0) {
-      apiMessages = apiMessages.map((m: any, i: number) =>
-        i === apiMessages.length - 1 ? { ...m, content: apiContent } : m
-      )
+      apiMessages = apiMessages.map((m, i: number) => {
+        if (i === apiMessages.length - 1 && m.role === 'user') {
+          return { ...m, content: apiContent };
+        }
+        return m;
+      })
     }
-    let totalChars = apiMessages.reduce((s: number, m: any) => s + (m.content?.length ?? 0), 0)
+    let totalChars = apiMessages.reduce((s: number, m) => {
+      const contentLen = 'content' in m ? m.content?.length ?? 0 : 0;
+      return s + contentLen;
+    }, 0)
     while (totalChars > MAX_CONTEXT_CHARS && apiMessages.length > 4) {
-      totalChars -= apiMessages.shift()!.content.length
+      const removed = apiMessages.shift()
+      if (removed && 'content' in removed) {
+        totalChars -= removed.content.length
+      }
     }
-    if (apiMessages.length < newMessages.filter((m: any) => m.role !== 'tool_step').length) {
+    if (apiMessages.length < newMessages.filter((m) => m.role !== 'tool_step').length) {
       apiMessages = [
         { role: 'system', content: `[${newMessages.length - apiMessages.length} earlier messages omitted — context window trimmed]` },
         ...apiMessages
@@ -335,29 +388,55 @@ export function useOllama() {
     // Auto-route to a vision-capable model when images are attached.
     let modelToUse = pickModel(content, activeModel)
     if (images && images.length > 0 && !VISION_MODELS.has(modelToUse)) {
-      const vision = models.find((m: any) => m.installed && VISION_MODELS.has(m.name))
+      const vision = models.find((m) => m.installed && VISION_MODELS.has(m.name))
       if (vision) modelToUse = vision.name
     }
     setLastRoutedModel(modelToUse)
 
     const customPrompt = localStorage.getItem('vortex-custom-prompt') ?? ''
     const searxngUrl = localStorage.getItem('vortex-searxng-url') ?? ''
-    const ipc = orchestraMode
-      ? (window as any).electron.ollamaOrchestrate
+    const ipc = (orchestraMode
+      ? window.electron.ollamaOrchestrate
       : agentMode
-        ? (window as any).electron.ollamaAgenticChat
-        : (window as any).electron.ollamaChat
-    const result = await ipc({ model: modelToUse, messages: apiMessages, customPrompt, searxngUrl, images })
+        ? window.electron.ollamaAgenticChat
+        : window.electron.ollamaChat) as unknown as (payload: {
+          model: string
+          messages: OllamaMessage[]
+          customPrompt?: string
+          searxngUrl?: string
+          images?: string[]
+        }) => Promise<{ success: boolean; error?: string }>
+    
+    // We map any custom types to the strict OllamaMessage format expected by IPC
+    const ipcMessages = apiMessages.map(m => {
+      if (m.role === 'orch_agent') {
+        return {
+          role: 'orch_agent' as const,
+          agentId: m.agentId,
+          agentRole: m.agentRole,
+          status: m.status,
+          output: m.output
+        };
+      }
+      const chatMsg = m as ChatMessage;
+      return {
+        role: chatMsg.role,
+        content: chatMsg.content,
+        images: chatMsg.images
+      };
+    }) as OllamaMessage[];
+
+    const result = await ipc({ model: modelToUse, messages: ipcMessages, customPrompt, searxngUrl, images })
     if (!result.success) {
       setError(result.error || 'Failed to start chat')
       setIsStreaming(false)
     }
-  }, [messages, activeModel, isStreaming, agentMode, orchestraMode, thinkMode, renameSession])
+  }, [messages, activeModel, isStreaming, agentMode, orchestraMode, thinkMode, renameSession, models, pickModel])
 
   const cancelStream = useCallback(async () => {
     setIsStreaming(false)
     currentResponseRef.current = ''
-    if ((window as any).electron) await (window as any).electron.ollamaCancel()
+    if (window.electron) await window.electron.ollamaCancel()
   }, [])
 
   const clearMessages = useCallback(async () => {

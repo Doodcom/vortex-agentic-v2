@@ -2,7 +2,15 @@ import { useState, useEffect } from 'react'
 import { Cpu, MemoryStick, Bot, Shield, Zap, MessageSquare, Hash } from 'lucide-react'
 
 interface StatusBarProps {
-  stats: any
+  stats: {
+    cpu?: {
+      load: number
+    }
+    memory?: {
+      used: number
+      total: number
+    }
+  } | null
 }
 
 function statColor(pct: number) {
@@ -11,7 +19,7 @@ function statColor(pct: number) {
   return 'var(--signal)'
 }
 
-function Pill({ icon: Icon, label, value, color }: { icon: any; label: string; value: string; color: string }) {
+function Pill({ icon: Icon, label, value, color }: { icon: React.ComponentType<{ size?: number; style?: React.CSSProperties }>; label: string; value: string; color: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
       <Icon size={9} style={{ color, flexShrink: 0 }} />
@@ -41,13 +49,18 @@ export default function StatusBar({ stats }: StatusBarProps) {
   const [tokenUsage, setTokenUsage] = useState<{ promptTokens: number; completionTokens: number } | null>(null)
 
   useEffect(() => {
-    const handleSessionChange = (e: any) => {
-      setSessionName(e.detail?.name || 'New Chat')
+    const handleSessionChange = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      setSessionName(detail?.name || 'New Chat')
     }
-    const handleModelChange = (e: any) => {
-      setModel((String(e.detail) ?? '').split(':')[0] || 'no model')
+    const handleModelChange = (e: Event) => {
+      const detail = (e as CustomEvent).detail
+      setModel(String(detail || '').split(':')[0] || 'no model')
     }
-    const handleTokenUsage = (e: any) => setTokenUsage(e.detail)
+    const handleTokenUsage = (e: Event) => {
+      const detail = (e as CustomEvent).detail as { promptTokens: number; completionTokens: number } | null
+      setTokenUsage(detail)
+    }
     window.addEventListener('vortex-session-change', handleSessionChange)
     window.addEventListener('vortex-model-change', handleModelChange)
     window.addEventListener('vortex-token-usage', handleTokenUsage)
@@ -59,16 +72,16 @@ export default function StatusBar({ stats }: StatusBarProps) {
   }, [])
 
   useEffect(() => {
-    const el = (window as any).electron
+    const el = window.electron
     if (!el?.powerGetProfile) return
-    el.powerGetProfile().then((r: any) => { if (r.profile) setPowerProfile(r.profile) })
+    el.powerGetProfile().then((r) => { if (r.profile) setPowerProfile(r.profile) })
   }, [])
 
   const cycleProfile = async () => {
     if (!powerProfile) return
-    const idx = PROFILES.indexOf(powerProfile as any)
+    const idx = PROFILES.indexOf(powerProfile as typeof PROFILES[number])
     const next = PROFILES[(idx + 1) % PROFILES.length]
-    const r = await (window as any).electron?.powerSetProfile(next)
+    const r = await window.electron?.powerSetProfile(next)
     if (r?.success) setPowerProfile(next)
   }
 

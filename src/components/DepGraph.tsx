@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { GitBranch, ArrowUpFromLine, ArrowDownToLine, RefreshCw } from 'lucide-react'
 
-interface DepTree {
+export interface DepTree {
   name: string
   version: string
   direct: string[]
