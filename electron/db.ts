@@ -56,6 +56,12 @@ export function setupDbHandlers() {
       created_at   INTEGER NOT NULL DEFAULT (unixepoch())
     );
 
+    CREATE TABLE IF NOT EXISTS kv_store (
+      key        TEXT PRIMARY KEY,
+      value      TEXT NOT NULL,
+      updated_at INTEGER NOT NULL DEFAULT (unixepoch())
+    );
+
     CREATE TABLE IF NOT EXISTS resource_history (
       ts     INTEGER NOT NULL,
       cpu    REAL    NOT NULL DEFAULT 0,
@@ -164,11 +170,32 @@ export function setupDbHandlers() {
     return { success: true }
   })
 
+  // ── Key-Value Store ───────────────────────────────────────────────────────
+  // Durable app settings/data that must survive cache cleaning (unlike localStorage).
+  ipcMain.handle('kv-get', (_, key: string) =>
+    (db.prepare('SELECT value FROM kv_store WHERE key = ?').get(key) as { value: string } | undefined)?.value ?? null
+  )
+  ipcMain.handle('kv-set', (_, { key, value }: { key: string; value: string }) => {
+    db.prepare(
+      'INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, unixepoch()) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()'
+    ).run(key, value)
+    return { success: true }
+  })
+  ipcMain.handle('kv-delete', (_, key: string) => {
+    db.prepare('DELETE FROM kv_store WHERE key = ?').run(key)
+    return { success: true }
+  })
+
   // ── Resource History ───────────────────────────────────────────────────────
   ipcMain.handle('db-get-resource-history', (_, hours: number = 24) => {
     const since = Math.floor(Date.now() / 1000) - hours * 3600
     return db.prepare('SELECT ts, cpu, ram, gpu, disk, net_rx FROM resource_history WHERE ts >= ? ORDER BY ts ASC').all(since)
   })
+}
+
+export function kvGetSync(key: string): string | null {
+  if (!db) return null
+  return (db.prepare('SELECT value FROM kv_store WHERE key = ?').get(key) as { value: string } | undefined)?.value ?? null
 }
 
 export function getMemoriesList(): string[] {

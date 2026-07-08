@@ -2,8 +2,6 @@
 import { ipcMain } from 'electron'
 import si from 'systeminformation'
 import { writeFileSync, readFileSync } from 'fs'
-import { tmpdir } from 'os'
-import { join } from 'path'
 import { execPromise, detectAurHelper, createSystemHelpers } from './system-common'
 
 export function setupHardwareHandlers(win: any) {
@@ -250,52 +248,4 @@ export function setupHardwareHandlers(win: any) {
     }
   })
 
-  ipcMain.handle('benchmark-run', async (_, { tests }: { tests: string[] }) => {
-    const results: Record<string, { score: number; unit: string; detail: string }> = {}
-    try {
-      if (tests.includes('cpu')) {
-        try {
-          const t0 = Date.now()
-          await execPromise(`bash -c "n=0; for ((i=1; i<=50000; i++)); do n=$((n+i)); done; echo $n"`)
-          const ms = Date.now() - t0
-          const score = Math.round(1000 / (ms / 1000) * 10) / 10
-          results.cpu = { score, unit: 'ops/s (higher=better)', detail: `50k iterations in ${ms}ms` }
-        } catch { results.cpu = { score: 0, unit: '', detail: 'failed' } }
-      }
-      if (tests.includes('disk_write')) {
-        try {
-          const tmpFile = `${tmpdir()}/vortex_bench_write_tmp`
-          const t0 = Date.now()
-          await execPromise(`dd if=/dev/zero of="${tmpFile}" bs=1M count=256 conv=fdatasync 2>&1`)
-          const ms = Date.now() - t0
-          await execPromise(`rm -f "${tmpFile}"`)
-          const mbps = Math.round(256 / (ms / 1000))
-          results.disk_write = { score: mbps, unit: 'MB/s', detail: `256 MB sequential write in ${ms}ms` }
-        } catch { results.disk_write = { score: 0, unit: 'MB/s', detail: 'failed' } }
-      }
-      if (tests.includes('disk_read')) {
-        try {
-          const tmpFile = `${tmpdir()}/vortex_bench_read_tmp`
-          await execPromise(`dd if=/dev/urandom of="${tmpFile}" bs=1M count=256 conv=fdatasync 2>/dev/null`)
-          const t0 = Date.now()
-          await execPromise(`dd if="${tmpFile}" of=/dev/null bs=1M 2>&1`)
-          const ms = Date.now() - t0
-          await execPromise(`rm -f "${tmpFile}"`)
-          const mbps = Math.round(256 / (ms / 1000))
-          results.disk_read = { score: mbps, unit: 'MB/s', detail: `256 MB sequential read in ${ms}ms` }
-        } catch { results.disk_read = { score: 0, unit: 'MB/s', detail: 'failed' } }
-      }
-      if (tests.includes('ram')) {
-        try {
-          const { stdout } = await execPromise(`dd if=/dev/zero bs=1M count=512 | dd of=/dev/null 2>&1 || true`)
-          const m = stdout.match(/([\d.]+)\s+MB\/s/)
-          const mbps = m ? Math.round(parseFloat(m[1])) : 0
-          results.ram = { score: mbps, unit: 'MB/s', detail: 'Memory throughput via dd' }
-        } catch { results.ram = { score: 0, unit: 'MB/s', detail: 'failed' } }
-      }
-      return { success: true, results }
-    } catch (e: any) {
-      return { success: false, results, error: e.message }
-    }
-  })
 }

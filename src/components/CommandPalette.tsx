@@ -3,8 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import {
   Search, Zap, Trash2, LayoutDashboard, MessageSquare, RefreshCw, Sparkles, Video, Box, Layers,
   Home, Terminal, Network, Cpu, HardDrive, Activity, List, Settings, Brain, Image, BookOpen,
-  Shield, Rocket, BarChart3, Play, Server, BotMessageSquare, Camera, GitBranch,
-  CalendarClock, KeyRound, FlameKindling, Archive, Gauge, Variable, AppWindow, HeartPulse
+  Rocket, BarChart3, Play, Server, BotMessageSquare, Camera, GitBranch,
+  CalendarClock, KeyRound, FlameKindling, Archive, HeartPulse
 } from 'lucide-react'
 import { cn } from '../lib/utils'
 
@@ -36,7 +36,6 @@ const COMMANDS = [
   { id: 'cleaner',    label: 'System Cleaner',            icon: Trash2,          action: 'nav:cleaner'     },
   { id: 'snapshots',  label: 'Restore Points (Snapper)', icon: Camera,          action: 'nav:snapshots'   },
   { id: 'optimizer', label: 'Optimizer (x86-v4)',       icon: Zap,             action: 'nav:optimizer'   },
-  { id: 'sandbox',   label: 'WinBoat Sandbox',          icon: Shield,          action: 'nav:sandbox'     },
   { id: 'gallery',   label: 'Asset Gallery',            icon: Image,           action: 'nav:gallery'     },
   { id: 'terminal',  label: 'Terminal',                 icon: Terminal,        action: 'nav:terminal'    },
   { id: 'audit',     label: 'Audit Log',                icon: BarChart3,       action: 'nav:audit'       },
@@ -46,9 +45,6 @@ const COMMANDS = [
   { id: 'ssh',       label: 'SSH Key Manager',          icon: KeyRound,        action: 'nav:ssh'         },
   { id: 'firewall',  label: 'UFW Firewall',             icon: FlameKindling,   action: 'nav:firewall'    },
   { id: 'vault',     label: 'Dotfile Vault',            icon: Archive,         action: 'nav:vault'       },
-  { id: 'benchmark', label: 'System Benchmark',         icon: Gauge,           action: 'nav:benchmark'   },
-  { id: 'env',       label: 'Environment Variables',    icon: Variable,        action: 'nav:env'         },
-  { id: 'app-launcher', label: 'App Launcher',          icon: AppWindow,       action: 'nav:app-launcher'},
   { id: 'health',    label: 'Health Report',            icon: HeartPulse,      action: 'nav:health'      },
   { id: 'settings',  label: 'Settings',                 icon: Settings,        action: 'nav:settings'    },
 ]

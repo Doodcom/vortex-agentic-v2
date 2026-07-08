@@ -1,6 +1,7 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { Reorder, useDragControls } from 'framer-motion'
 import { Plus, Play, Trash2, GripVertical, CheckCircle2, XCircle, Loader2, ChevronRight, Pencil, Save, X, Zap, Terminal, Package, RefreshCw, Cpu, Camera, HardDrive, Sparkles } from 'lucide-react'
+import { kvGetJson, kvSetJson } from '../lib/kv'
 
 const AUTOMATIONS_KEY = 'vortex-automations'
 
@@ -43,14 +44,6 @@ const TEMPLATES: { id: string; label: string; command: string; icon: any; color:
 ]
 
 function uid() { return Math.random().toString(36).slice(2, 9) }
-
-function loadAutomations(): Automation[] {
-  try { return JSON.parse(localStorage.getItem(AUTOMATIONS_KEY) ?? '[]') } catch { return [] }
-}
-
-function saveAutomations(list: Automation[]) {
-  localStorage.setItem(AUTOMATIONS_KEY, JSON.stringify(list))
-}
 
 function StepRow({ step, onRemove, onCommandChange, status, output }: {
   step: AutoStep
@@ -123,7 +116,7 @@ function StatusBadge({ status }: { status: StepStatus }) {
 }
 
 export default function AutomationsView() {
-  const [automations, setAutomations] = useState<Automation[]>(loadAutomations)
+  const [automations, setAutomations] = useState<Automation[]>([])
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [editingName, setEditingName] = useState(false)
   const [nameInput, setNameInput] = useState('')
@@ -132,9 +125,13 @@ export default function AutomationsView() {
 
   const selected = automations.find(a => a.id === selectedId) ?? null
 
+  useEffect(() => {
+    kvGetJson<Automation[]>(AUTOMATIONS_KEY, []).then(setAutomations)
+  }, [])
+
   const persist = useCallback((list: Automation[]) => {
     setAutomations(list)
-    saveAutomations(list)
+    kvSetJson(AUTOMATIONS_KEY, list)
   }, [])
 
   function createNew() {

@@ -233,12 +233,41 @@ const TOOLS = [
   }
 ]
 
+// Destructive patterns the agent may never run autonomously. The agent also
+// fetches web content, so a poisoned page must not be able to reach these.
+const EXEC_DENYLIST: { re: RegExp; label: string }[] = [
+  { re: /\brm\s+(-[a-zA-Z]*[rf][a-zA-Z]*\s+)+(\/|~|\$HOME|"?\/home)/, label: 'recursive delete of home or root paths' },
+  { re: /\bmkfs\b/, label: 'filesystem format' },
+  { re: /\bdd\b[^|;&]*\bof=\/dev\//, label: 'raw write to block device' },
+  { re: /\b(shutdown|reboot|poweroff|halt)\b/, label: 'power control' },
+  { re: /\bchmod\s+(-[a-zA-Z]+\s+)*[0-7]*777\s+\//, label: 'chmod 777 on root paths' },
+  { re: /\b(curl|wget)\b[^|;&]*\|\s*(ba|z|fi)?sh\b/, label: 'pipe download to shell' },
+  { re: />\s*\/etc\//, label: 'overwrite of /etc' },
+  { re: /\bpacman\s+(-[a-zA-Z]*R|-[a-zA-Z]*S(?:yu)?[a-zA-Z]*)\b[^|;&]*--noconfirm/, label: 'unattended package install/removal' },
+  { re: /:\s*\(\)\s*\{\s*:\s*\|\s*:/, label: 'fork bomb' },
+  { re: /\b(userdel|groupdel|passwd)\b/, label: 'account modification' },
+]
+
+function checkExecDenylist(cmd: string): string | null {
+  for (const { re, label } of EXEC_DENYLIST) {
+    if (re.test(cmd)) return label
+  }
+  return null
+}
+
 async function executeTool(name: string, args: any, ctx: { searxngUrl: string } = { searxngUrl: '' }): Promise<string> {
   logAgent(`TOOL_CALL: ${name} | ARGS: ${JSON.stringify(args)}`)
   switch (name) {
     case 'exec_command': {
-      let cmd = String(args.command ?? '')
-      if (cmd.includes('~')) cmd = cmd.replace(/~/g, homedir())
+      // The shell expands ~ itself; rewriting it here corrupts commands that
+      // use literal tildes (sed s~a~b~, URLs).
+      const cmd = String(args.command ?? '')
+      const denied = checkExecDenylist(cmd)
+      if (denied) {
+        logAgent(`TOOL_DENIED: exec_command (${denied}) | CMD: ${cmd}`)
+        logAuditCommand(cmd, 126, 'agent-denied')
+        return `Error: command blocked by Vortex safety policy (${denied}). Ask the user to run it manually if it is genuinely needed.`
+      }
       try {
         const { stdout, stderr } = await execAsync(cmd, { timeout: 30000 })
         logAuditCommand(cmd, 0, 'agent')

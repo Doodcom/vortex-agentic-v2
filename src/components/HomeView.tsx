@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { Home, Shield, Bell, Lightbulb, Camera, Power, Activity, ExternalLink, RefreshCw } from 'lucide-react'
 import { useTheme } from './ThemeProvider'
 import { notify } from '../lib/notifications'
+import { kvGet, kvSet } from '../lib/kv'
 
 interface HAEntity {
   entity_id: string
@@ -15,8 +16,9 @@ interface HAEntity {
 
 export default function HomeView() {
   const { playSound } = useTheme()
-  const [haIp, setHaIp] = useState(() => localStorage.getItem('vortex-ha-ip') || 'http://localhost:8123')
-  const [haToken, setHaToken] = useState(() => localStorage.getItem('vortex-ha-token') || '')
+  const [haIp, setHaIp] = useState('http://localhost:8123')
+  const [haToken, setHaToken] = useState('')
+  const [haConfigLoaded, setHaConfigLoaded] = useState(false)
   const [isHaConnected, setIsHaConnected] = useState(false)
   const [entities, setEntities] = useState<HAEntity[]>([])
   const [isLoadingEntities, setIsLoadingEntities] = useState(false)
@@ -29,12 +31,13 @@ export default function HomeView() {
   const fetchCameraPreview = useCallback(async (entityId: string) => {
     if (!haToken || !haIp) return
     try {
-      const resp = await fetch(`${haIp}/api/camera_proxy/${entityId}`, {
-        headers: { 'Authorization': `Bearer ${haToken}` }
+      const resp = await window.electron.netFetch({
+        url: `${haIp}/api/camera_proxy/${entityId}`,
+        headers: { 'Authorization': `Bearer ${haToken}` },
+        binary: true,
       })
-      if (!resp.ok) return
-      const blob = await resp.blob()
-      const url = URL.createObjectURL(blob)
+      if (!resp.ok || !resp.base64) return
+      const url = `data:${resp.contentType || 'image/jpeg'};base64,${resp.base64}`
       setCameraPreviews(prev => ({ ...prev, [entityId]: url }))
     } catch (e) {
       console.error(`Failed to fetch preview for ${entityId}`, e)
@@ -45,10 +48,12 @@ export default function HomeView() {
     if (!haToken) return
     setIsLoadingEntities(true)
     try {
-      const resp = await fetch(`${haIp}/api/states`, {
-        headers: { 'Authorization': `Bearer ${haToken}` }
+      const resp = await window.electron.netFetch({
+        url: `${haIp}/api/states`,
+        headers: { 'Authorization': `Bearer ${haToken}` },
       })
-      const data = await resp.json()
+      if (!resp.ok || !resp.body) throw new Error(resp.error || `HTTP ${resp.status}`)
+      const data = JSON.parse(resp.body)
       const filtered = data.filter((e: HAEntity) => 
         e.entity_id.includes('ring') || 
         e.entity_id.includes('camera') ||
@@ -73,17 +78,10 @@ export default function HomeView() {
   const checkHaConnection = useCallback(async () => {
     if (!haIp) return
     try {
-      const controller = new AbortController()
-      const id = setTimeout(() => controller.abort(), 2000)
-      
       const headers: Record<string, string> = { 'Content-Type': 'application/json' }
       if (haToken) headers['Authorization'] = `Bearer ${haToken}`
-      
-      const resp = await fetch(`${haIp}/api/config`, { 
-        headers,
-        signal: controller.signal 
-      })
-      clearTimeout(id)
+
+      const resp = await window.electron.netFetch({ url: `${haIp}/api/config`, headers, timeoutMs: 2000 })
       setIsHaConnected(resp.ok)
       if (resp.ok && haToken) fetchEntities()
     } catch {
@@ -91,14 +89,23 @@ export default function HomeView() {
     }
   }, [haIp, haToken, fetchEntities])
 
+  // Load HA config from the durable kv store (migrates old localStorage values)
   useEffect(() => {
-    localStorage.setItem('vortex-ha-ip', haIp)
-    localStorage.setItem('vortex-ha-token', haToken)
-    const runCheck = async () => {
-      await checkHaConnection()
-    }
-    runCheck()
-  }, [haIp, haToken, checkHaConnection])
+    (async () => {
+      const ip = await kvGet('vortex-ha-ip')
+      const token = await kvGet('vortex-ha-token')
+      if (ip) setHaIp(ip)
+      if (token) setHaToken(token)
+      setHaConfigLoaded(true)
+    })()
+  }, [])
+
+  useEffect(() => {
+    if (!haConfigLoaded) return
+    kvSet('vortex-ha-ip', haIp)
+    kvSet('vortex-ha-token', haToken)
+    checkHaConnection()
+  }, [haConfigLoaded, haIp, haToken, checkHaConnection])
 
   const handleToggleHA = async () => {
     playSound('click')
@@ -400,32 +407,25 @@ function LiveCameraOverlay({ entityId, haIp, haToken, onClose, onOpenExternal, l
 }) {
   const [autoRefresh, setAutoRefresh] = useState(true)
   const [liveSrc, setLiveSrc] = useState<string | null>(null)
-  const prevBlobRef = useRef<string | null>(null)
 
   // HA camera_proxy requires Bearer auth header — <img src> can't send headers,
-  // so we fetch → blob URL on each refresh tick.
+  // so we fetch via the main process → data URL on each refresh tick.
   useEffect(() => {
     let cancelled = false
     const fetchFrame = async () => {
       try {
-        const resp = await fetch(`${haIp}/api/camera_proxy/${entityId}`, {
-          headers: { Authorization: `Bearer ${haToken}` }
+        const resp = await window.electron.netFetch({
+          url: `${haIp}/api/camera_proxy/${entityId}`,
+          headers: { Authorization: `Bearer ${haToken}` },
+          binary: true,
         })
-        if (!resp.ok || cancelled) return
-        const blob = await resp.blob()
-        const url = URL.createObjectURL(blob)
-        if (cancelled) { URL.revokeObjectURL(url); return }
-        if (prevBlobRef.current) URL.revokeObjectURL(prevBlobRef.current)
-        prevBlobRef.current = url
-        setLiveSrc(url)
+        if (!resp.ok || !resp.base64 || cancelled) return
+        setLiveSrc(`data:${resp.contentType || 'image/jpeg'};base64,${resp.base64}`)
       } catch { /* network error — overlay stays on last frame */ }
     }
     fetchFrame()
     return () => { cancelled = true }
   }, [liveRefreshKey, entityId, haIp, haToken])
-
-  // Revoke blob on unmount
-  useEffect(() => () => { if (prevBlobRef.current) URL.revokeObjectURL(prevBlobRef.current) }, [])
 
   useEffect(() => {
     if (autoRefresh) {

@@ -3,7 +3,7 @@ import {
   Package, MessageSquare,
   Terminal as TerminalIcon, Settings, Server, Activity, Wifi,
   Clock, HardDrive, ShieldCheck, ScrollText, Power, Sparkles, Video, Box, Layers,
-  Library, Brain, Home, Cpu, Shield, BotMessageSquare, Camera, LineChart, GitBranch, CalendarClock, KeyRound, FlameKindling, Gauge, Archive, Variable, AppWindow, HeartPulse
+  Library, Brain, Home, Cpu, BotMessageSquare, Camera, LineChart, GitBranch, CalendarClock, KeyRound, FlameKindling, Archive, HeartPulse
 } from 'lucide-react'
 
 export interface NavItem {
@@ -23,7 +23,6 @@ export const navCategories: NavCategory[] = [
     items: [
       { id: 'dashboard',   label: 'Dashboard',       icon: LayoutDashboard },
       { id: 'home',        label: 'Home Assistant',  icon: Home },
-      { id: 'app-launcher',label: 'App Launcher',    icon: AppWindow },
     ]
   },
   {
@@ -45,8 +44,6 @@ export const navCategories: NavCategory[] = [
       { id: 'updates', label: 'Updates', icon: Zap },
       { id: 'cleaner',   label: 'Cleaner',         icon: Trash2 },
       { id: 'snapshots', label: 'Restore Points',   icon: Camera },
-      { id: 'benchmark', label: 'Benchmark',         icon: Gauge },
-      { id: 'sandbox',   label: 'Sandbox',          icon: Shield },
     ]
   },
   {
@@ -58,7 +55,6 @@ export const navCategories: NavCategory[] = [
       { id: 'packages', label: 'Packages', icon: Package },
       { id: 'depgraph', label: 'Dep Graph', icon: Layers },
       { id: 'docker',    label: 'Docker',      icon: Box },
-      { id: 'compose-builder', label: 'Compose Builder', icon: Layers },
     ]
   },
   {
@@ -69,9 +65,7 @@ export const navCategories: NavCategory[] = [
       { id: 'boot',      label: 'Boot Analyser', icon: Clock },
       { id: 'history',   label: 'Sys History',   icon: LineChart },
       { id: 'health',    label: 'Health Report', icon: HeartPulse },
-      { id: 'log-analysis', label: 'AI Log Advisor', icon: BotMessageSquare },
       { id: 'audit',     label: 'Audit Log',     icon: ShieldCheck },
-      { id: 'env',       label: 'Env Variables', icon: Variable },
       { id: 'logs',      label: 'Log Viewer',    icon: ScrollText },
       { id: 'startup',   label: 'Startup Apps',  icon: Power },
     ]

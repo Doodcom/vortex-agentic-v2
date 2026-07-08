@@ -2,7 +2,6 @@ import { ipcMain } from 'electron'
 import { existsSync, readdirSync } from 'fs'
 import { join } from 'path'
 import { homedir } from 'os'
-import { exec } from 'child_process'
 import axios from 'axios'
 import { execPromise, createSystemHelpers } from './system-common'
 
@@ -282,23 +281,4 @@ export function setupAiHandlers(win: any) {
     return await runGameModeToggle(enable)
   })
 
-  ipcMain.handle('winboat-detect', async () => {
-    try {
-      const { stdout } = await execPromise('which winboat 2>/dev/null || echo ""')
-      return { success: !!stdout.trim() }
-    } catch { return { success: false } }
-  })
-
-  ipcMain.handle('winboat-run', async (_, exePath: string) => {
-    if (!exePath) return { success: false, error: 'No EXE path provided' }
-    try {
-      const cmd = `winboat run --gpu --xwayland "${exePath}"`
-      exec(cmd, (error, _stdout, _stderr) => {
-        if (error) console.error(`[Vortex] WinBoat Error: ${error.message}`)
-      })
-      return { success: true, output: 'Sandbox session initialized.' }
-    } catch (e: any) {
-      return { success: false, error: e.message }
-    }
-  })
 }

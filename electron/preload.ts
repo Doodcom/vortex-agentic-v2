@@ -168,8 +168,6 @@ contextBridge.exposeInMainWorld('electron', {
   systemSnapperRollback: (p: { id: string }) => ipcRenderer.invoke('system-snapper-rollback', p),
   gpuVramSqueeze: () => ipcRenderer.invoke('gpu-vram-squeeze'),
   gameModeToggle: (enable: boolean) => ipcRenderer.invoke('game-mode-toggle', enable),
-  winboatDetect: () => ipcRenderer.invoke('winboat-detect'),
-  winboatRun: (path: string) => ipcRenderer.invoke('winboat-run', path),
   systemAuditArch: () => ipcRenderer.invoke('system-audit-arch'),
   systemRebuildNative: (pkg: string) => ipcRenderer.invoke('system-rebuild-native', pkg),
   guardianToggle: (enable: boolean) => ipcRenderer.invoke('guardian-toggle', enable),
@@ -184,7 +182,7 @@ contextBridge.exposeInMainWorld('electron', {
     if (listener) ipcRenderer.removeListener(channel, listener)
     else ipcRenderer.removeAllListeners(channel)
   },
-  // App Launcher
+  // Desktop apps (used by Packages + Startup views)
   appsList: () => ipcRenderer.invoke('apps-list'),
   appsLaunch: (p: { exec: string }) => ipcRenderer.invoke('apps-launch', p),
 
@@ -203,9 +201,6 @@ contextBridge.exposeInMainWorld('electron', {
   vaultSyncBackup: (p: { filename: string }) => ipcRenderer.invoke('vault-sync-backup', p),
   vaultListRemote: () => ipcRenderer.invoke('vault-list-remote'),
   vaultDownloadRemote: (p: { filename: string }) => ipcRenderer.invoke('vault-download-remote', p),
-
-  // Benchmark
-  benchmarkRun: (payload: { tests: string[] }) => ipcRenderer.invoke('benchmark-run', payload),
 
   // UFW
   ufwStatus: () => ipcRenderer.invoke('ufw-status'),
@@ -228,11 +223,12 @@ contextBridge.exposeInMainWorld('electron', {
   btrfsDefrag: (path: string) => ipcRenderer.invoke('btrfs-defrag', path),
   btrfsUsage: () => ipcRenderer.invoke('btrfs-usage'),
 
-  // R6: Docker Compose Builder
-  dockerComposeDeploy: (p: { projectName: string; yamlContent: string }) => ipcRenderer.invoke('docker-compose-deploy', p),
-  dockerComposeDown: (p: { projectName: string }) => ipcRenderer.invoke('docker-compose-down', p),
-  dockerComposeDelete: (p: { projectName: string }) => ipcRenderer.invoke('docker-compose-delete', p),
-  dockerComposeList: () => ipcRenderer.invoke('docker-compose-list'),
+  netFetch: (opts: { url: string; method?: string; headers?: Record<string, string>; body?: string; binary?: boolean; timeoutMs?: number }) => ipcRenderer.invoke('net-fetch', opts),
+
+  // Durable key-value store (sqlite-backed, survives cache cleaning)
+  kvGet: (key: string) => ipcRenderer.invoke('kv-get', key),
+  kvSet: (key: string, value: string) => ipcRenderer.invoke('kv-set', { key, value }),
+  kvDelete: (key: string) => ipcRenderer.invoke('kv-delete', key),
 
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
   showContextMenu: (props: any) => ipcRenderer.invoke('show-context-menu', props)

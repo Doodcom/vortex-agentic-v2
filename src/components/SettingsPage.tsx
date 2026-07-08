@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react'
 import { useTheme, type ThemeType } from './ThemeProvider'
-import { Volume2, VolumeX, Zap, ZapOff, Palette, Bot, Check, Info, FileText, Brain, Trash2, Plus, Cpu, Fingerprint, Globe, ShieldCheck, Bell, Sparkles } from 'lucide-react'
+import { Volume2, VolumeX, Zap, ZapOff, Palette, Bot, Check, Info, FileText, Brain, Trash2, Plus, Cpu, Fingerprint, Globe, ShieldCheck, Bell, Sparkles, Power, PowerOff } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { VORTEX_MODELS, DEFAULT_MODEL } from '../lib/models'
 import { notify } from '../lib/notifications'
 
 import { ALERT_THRESHOLDS_KEY, DEFAULT_THRESHOLDS, type AlertThresholds } from '../lib/alerts'
+import { kvGet, kvSet } from '../lib/kv'
 
 const COLOR_THEMES: { id: ThemeType; label: string; color: string }[] = [
   { id: 'vortex-red',    label: 'Red',    color: '#ef4444' },
@@ -168,6 +169,15 @@ export default function SettingsPage() {
     () => localStorage.getItem('vortex-searxng-url') ?? 'http://localhost:8080'
   )
   const [searxngSaved, triggerSearxngSaved] = useSaveFlag()
+
+  const [stopComfyOnQuit, setStopComfyOnQuit] = useState(false)
+  useEffect(() => {
+    kvGet('vortex-stop-comfy-on-quit').then(v => setStopComfyOnQuit(v === '1'))
+  }, [])
+  const handleStopComfyToggle = (v: boolean) => {
+    setStopComfyOnQuit(v)
+    kvSet('vortex-stop-comfy-on-quit', v ? '1' : '0')
+  }
 
   const [memories, setMemories] = useState<{ id: number; fact: string; created_at: number }[]>([])
   const [newFact, setNewFact] = useState('')
@@ -367,6 +377,14 @@ export default function SettingsPage() {
 
       {/* AI Configuration */}
       <Section title="// AI Node Configuration">
+        <Toggle
+          enabled={stopComfyOnQuit}
+          onChange={handleStopComfyToggle}
+          label="Stop ComfyUI on Quit"
+          sublabel="Kill the ComfyUI backend when Vortex exits, freeing its VRAM (only if Vortex started it)"
+          icon={Power}
+          offIcon={PowerOff}
+        />
         <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '6px' }}>
           <Bot size={14} style={{ color: '#71717a' }} />
           <span style={{ fontSize: '12px', fontFamily: 'monospace', fontWeight: 'bold', color: '#a1a1aa', textTransform: 'uppercase', letterSpacing: '0.05em' }}>

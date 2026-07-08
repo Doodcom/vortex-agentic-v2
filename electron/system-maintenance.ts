@@ -300,6 +300,9 @@ Rules:
       return { success: false, error: 'Command blocked by security supervisor: contains potentially destructive patterns.' }
     }
 
+    // Auto-snapshot before applying an AI-suggested fix, so any bad remediation is one rollback away
+    try { await execPromise('pkexec snapper --no-dbus -c root create -t single -d "Vortex AI remediation"') } catch {}
+
     try {
       const escapedCommand = command.replace(/'/g, "'\\''")
       const { stdout, stderr } = await execPromise(`pkexec bash -c '${escapedCommand}'`)

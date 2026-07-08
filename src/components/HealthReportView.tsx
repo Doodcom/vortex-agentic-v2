@@ -15,10 +15,10 @@ interface Report {
   generatedAt: number
 }
 
-function parseReport(text: string, data: Record<string, any>): Report {
+// The health score is always computed deterministically from real metrics
+// (buildBaseReport); the AI only supplies prose — never the number.
+function parseAiProse(text: string): { summary: string; recommendations: string[] } {
   const lines = text.split('\n').map(l => l.trim()).filter(Boolean)
-  const scoreMatch = text.match(/(?:score|rating)[:\s]+(\d+)/i)
-  const score = scoreMatch ? Math.min(100, Math.max(0, parseInt(scoreMatch[1]))) : 70
 
   const recs: string[] = []
   let inRecs = false
@@ -28,17 +28,7 @@ function parseReport(text: string, data: Record<string, any>): Report {
   }
 
   const summary = lines.slice(0, 3).join(' ').slice(0, 280)
-
-  const sections: ReportSection[] = [
-    { title: 'CPU', status: (data.cpu?.load ?? 0) > 85 ? 'warn' : 'ok', detail: `Load: ${Math.round(data.cpu?.load ?? 0)}%` },
-    { title: 'RAM', status: data.memPct > 90 ? 'error' : data.memPct > 75 ? 'warn' : 'ok', detail: `Used: ${Math.round(data.memPct ?? 0)}%` },
-    { title: 'Disk', status: (data.diskPct ?? 0) > 90 ? 'error' : (data.diskPct ?? 0) > 80 ? 'warn' : 'ok', detail: `Root: ${Math.round(data.diskPct ?? 0)}% used` },
-    { title: 'Journal Errors', status: (data.errorCount ?? 0) > 20 ? 'error' : (data.errorCount ?? 0) > 5 ? 'warn' : 'ok', detail: `${data.errorCount ?? 0} recent errors` },
-    { title: 'Failed Services', status: (data.failedServices ?? 0) > 0 ? 'error' : 'ok', detail: `${data.failedServices ?? 0} failed units` },
-    { title: 'Pending Updates', status: (data.updateCount ?? 0) > 30 ? 'warn' : 'ok', detail: `${data.updateCount ?? 0} packages` },
-  ]
-
-  return { score, summary, sections, recommendations: recs.slice(0, 6), generatedAt: Date.now() }
+  return { summary, recommendations: recs.slice(0, 6) }
 }
 
 const SCORE_COLOR = (s: number) => s >= 85 ? '#34d399' : s >= 65 ? '#f59e0b' : '#f87171'
@@ -178,11 +168,10 @@ SYSTEM DATA:
 - Pending package updates: ${data.updateCount ?? 0}
 
 Respond with:
-1. A single score from 0–100 (format: "Score: XX")
-2. A 2-3 sentence summary of the overall system health
-3. A numbered list of up to 5 specific, actionable recommendations labelled "Recommendations:"
+1. A 2-3 sentence summary of the overall system health
+2. A numbered list of up to 5 specific, actionable recommendations labelled "Recommendations:"
 
-Be concise and direct.`
+Be concise and direct. Do not invent a numeric score.`
 
       try {
         let fullText = ''
@@ -193,7 +182,12 @@ Be concise and direct.`
             .catch(() => { unsub(); resolve() })
         })
         if (fullText) {
-          setReport(parseReport(fullText, data))
+          const ai = parseAiProse(fullText)
+          setReport({
+            ...base,
+            summary: ai.summary || base.summary,
+            recommendations: ai.recommendations.length ? ai.recommendations : base.recommendations,
+          })
           setAiEnhanced(true)
         }
       } catch {}

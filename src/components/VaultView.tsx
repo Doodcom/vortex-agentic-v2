@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { Archive, Plus, Trash2, RotateCcw, RefreshCw, X, FolderOpen, Save, Cloud, UploadCloud, DownloadCloud } from 'lucide-react'
 import { notify } from '../lib/notifications'
+import { kvGetJson, kvSetJson } from '../lib/kv'
 
 const VAULT_PATHS_KEY = 'vortex-vault-paths'
 
@@ -20,12 +21,8 @@ interface CombinedBackup {
   status: 'Local Only' | 'Cloud Synced' | 'Remote Only';
 }
 
-function loadPaths(): string[] {
-  try { return JSON.parse(localStorage.getItem(VAULT_PATHS_KEY) ?? 'null') ?? DEFAULT_PATHS } catch { return DEFAULT_PATHS }
-}
-
 export default function VaultView() {
-  const [paths, setPaths] = useState<string[]>(loadPaths)
+  const [paths, setPaths] = useState<string[]>(DEFAULT_PATHS)
   const [newPath, setNewPath] = useState('')
   const [backups, setBackups] = useState<Backup[]>([])
   const [loading, setLoading] = useState(true)
@@ -44,7 +41,11 @@ export default function VaultView() {
   const [savingConfig, setSavingConfig] = useState(false)
   const [selectedRemoteOption, setSelectedRemoteOption] = useState('manual')
 
-  const savePaths = (p: string[]) => { setPaths(p); localStorage.setItem(VAULT_PATHS_KEY, JSON.stringify(p)) }
+  useEffect(() => {
+    kvGetJson<string[] | null>(VAULT_PATHS_KEY, null).then(p => { if (p) setPaths(p) })
+  }, [])
+
+  const savePaths = (p: string[]) => { setPaths(p); kvSetJson(VAULT_PATHS_KEY, p) }
 
   const addPath = () => {
     const t = newPath.trim()

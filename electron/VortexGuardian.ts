@@ -1,6 +1,6 @@
 import { exec } from 'child_process'
 import { promisify } from 'util'
-import { ipcMain } from 'electron'
+import { ipcMain, type BrowserWindow } from 'electron'
 import { runGameModeToggle } from './system'
 
 const execPromise = promisify(exec)
@@ -9,7 +9,7 @@ class VortexGuardian {
   private isEnabled: boolean = false
   private interval: NodeJS.Timeout | null = null
   private lastGameState: boolean = false
-  private win: any = null
+  private win: BrowserWindow | null = null
 
   // Common gaming related processes to watch for
   private GAME_PROCESSES = [
@@ -19,7 +19,7 @@ class VortexGuardian {
 
   constructor() {}
 
-  public init(window: any) {
+  public init(window: BrowserWindow) {
     this.win = window
     this.setupIpc()
     console.log('[Guardian] Agentic Watchdog Initialized')

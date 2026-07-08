@@ -379,8 +379,6 @@ export interface ElectronAPI {
   systemSnapperRollback: (p: { id: string }) => Promise<{ success: boolean; output?: string; error?: string }>
   gpuVramSqueeze: () => Promise<{ success: boolean; output?: string; error?: string }>
   gameModeToggle: (enable: boolean) => Promise<{ success: boolean; log: string }>
-  winboatDetect: () => Promise<{ success: boolean }>
-  winboatRun: (path: string) => Promise<{ success: boolean; output?: string; error?: string }>
   systemAuditArch: () => Promise<{ success: boolean; packages: { name: string; repo: string; isGeneric: boolean }[]; error?: string }>
   systemRebuildNative: (pkg: string) => Promise<{ success: boolean; log: string }>
   guardianToggle: (enable: boolean) => Promise<{ success: boolean; enabled: boolean }>
@@ -392,7 +390,7 @@ export interface ElectronAPI {
   ragStatus: () => Promise<{ path: string | null; fileCount: number }>
   ragClearCache: () => Promise<{ success: boolean }>
 
-  // App Launcher
+  // Desktop apps (used by Packages + Startup views)
   appsList: () => Promise<{ success: boolean; apps: { name: string; exec: string; comment: string; categories: string; icon: string; path: string }[]; error?: string }>
   appsLaunch: (p: { exec: string }) => Promise<{ success: boolean; error?: string }>
 
@@ -411,9 +409,6 @@ export interface ElectronAPI {
   vaultSyncBackup: (p: { filename: string }) => Promise<{ success: boolean; error?: string }>
   vaultListRemote: () => Promise<{ success: boolean; backups: { filename: string }[]; error?: string }>
   vaultDownloadRemote: (p: { filename: string }) => Promise<{ success: boolean; error?: string }>
-
-  // Benchmark
-  benchmarkRun: (payload: { tests: string[] }) => Promise<{ success: boolean; results: Record<string, { score: number; unit: string; detail: string }>; error?: string }>
 
   // UFW
   ufwStatus: () => Promise<{ success: boolean; enabled: boolean; rules: { to: string; action: string; from: string; comment: string }[]; raw: string; error?: string }>
@@ -436,11 +431,12 @@ export interface ElectronAPI {
   btrfsDefrag: (path: string) => Promise<{ success: boolean; error?: string }>
   btrfsUsage: () => Promise<{ success: boolean; dataAlloc: number; metaAlloc: number; unallocated: number; error?: string }>
 
-  // R6: Docker Compose Builder
-  dockerComposeDeploy: (p: { projectName: string; yamlContent: string }) => Promise<{ success: boolean; log: string; error?: string }>
-  dockerComposeDown: (p: { projectName: string }) => Promise<{ success: boolean; log: string; error?: string }>
-  dockerComposeDelete: (p: { projectName: string }) => Promise<{ success: boolean; error?: string }>
-  dockerComposeList: () => Promise<{ success: boolean; projects: { name: string; path: string; status: string; services: string[] }[]; error?: string }>
+  netFetch: (opts: { url: string; method?: string; headers?: Record<string, string>; body?: string; binary?: boolean; timeoutMs?: number }) => Promise<{ ok: boolean; status: number; body?: string; base64?: string; contentType?: string; error?: string }>
+
+  // Durable key-value store (sqlite-backed, survives cache cleaning)
+  kvGet: (key: string) => Promise<string | null>
+  kvSet: (key: string, value: string) => Promise<{ success: boolean }>
+  kvDelete: (key: string) => Promise<{ success: boolean }>
 
   openExternal: (url: string) => Promise<{ success: boolean }>
   showContextMenu: (props: ContextMenuProps) => Promise<void>

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { RefreshCw, Play, Square, Filter } from 'lucide-react'
+import { RefreshCw, Play, Square, Filter, ScrollText, Bot } from 'lucide-react'
 import { motion } from 'framer-motion'
+import LogAnalysisPanel from './LogAnalysisView'
 
 function lineColor(line: string): string {
   const l = line.toLowerCase()
@@ -30,6 +31,7 @@ const SINCE_OPTIONS = [
 const LINE_OPTIONS = [100, 300, 500, 1000]
 
 export default function LogView() {
+  const [mode, setMode] = useState<'browse' | 'ai'>('browse')
   const [lines, setLines] = useState<string[]>([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -70,9 +72,33 @@ export default function LogView() {
     fontFamily: 'monospace', outline: 'none',
   }
 
+  const modeTabStyle = (active: boolean): React.CSSProperties => ({
+    display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 14px', borderRadius: '8px',
+    border: `1px solid ${active ? 'rgba(34,211,238,0.25)' : 'rgba(255,255,255,0.06)'}`,
+    background: active ? 'rgba(34,211,238,0.08)' : 'rgba(255,255,255,0.02)',
+    color: active ? 'var(--signal)' : '#52525b', fontSize: '10px', fontFamily: 'monospace',
+    textTransform: 'uppercase', cursor: 'pointer',
+  })
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', height: 'calc(100vh - 220px)' }}>
 
+      {/* Mode switch: raw browsing vs AI diagnosis */}
+      <div style={{ display: 'flex', gap: '8px', flexShrink: 0 }}>
+        <button onClick={() => setMode('browse')} style={modeTabStyle(mode === 'browse')}>
+          <ScrollText size={11} /> Browse
+        </button>
+        <button onClick={() => setMode('ai')} style={modeTabStyle(mode === 'ai')}>
+          <Bot size={11} /> AI Diagnose
+        </button>
+      </div>
+
+      {mode === 'ai' ? (
+        <div style={{ flex: 1, overflowY: 'auto' }}>
+          <LogAnalysisPanel />
+        </div>
+      ) : (
+      <>
       {/* Filter bar */}
       <div className="v-card" style={{ padding: '14px 18px', flexShrink: 0 }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '12px' }}>
@@ -137,6 +163,8 @@ export default function LogView() {
           </div>
         )}
       </div>
+      </>
+      )}
     </div>
   )
 }

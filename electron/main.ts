@@ -1,7 +1,7 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog, shell, session } from 'electron'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { exec, spawn } from 'node:child_process'
+import { exec, spawn, type ChildProcess } from 'node:child_process'
 import { readFileSync, openSync } from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
@@ -9,7 +9,7 @@ import si from 'systeminformation'
 import { setupOllamaHandlers, cancelAndPurge } from './ollama'
 import { setupSystemHandlers } from './system'
 import { setupRagHandlers } from './rag'
-import { setupDbHandlers, startResourcePoller } from './db'
+import { setupDbHandlers, startResourcePoller, kvGetSync } from './db'
 import { setupPtyHandlers } from './pty'
 import { guardian } from './VortexGuardian'
 
@@ -20,7 +20,8 @@ process.env.VITE_PUBLIC = app.isPackaged ? process.env.DIST : path.join(process.
 
 let win: BrowserWindow | null
 let tray: Tray | null = null
-let comfyProcess: any = null
+let comfyProcess: ChildProcess | null = null
+let isQuiting = false
 
 async function startComfyUI() {
   const comfyDir = path.join(process.env.HOME || os.homedir(), '.comfyui-headless')
@@ -97,7 +98,6 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
-      webSecurity: false,
     },
   })
 
@@ -108,7 +108,7 @@ function createWindow() {
 
   // Hide to tray on close instead of quitting — purge VRAM so GPU is freed while minimised
   win.on('close', (e) => {
-    if (!(app as any).isQuiting) {
+    if (!isQuiting) {
       e.preventDefault()
       cancelAndPurge().catch(() => {})
       win?.hide()
@@ -132,7 +132,54 @@ function createWindow() {
   }
 }
 
+const PRIVATE_HOST = /^(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})$/
+
+// LAN dashboards (Home Assistant portal) send X-Frame-Options: SAMEORIGIN,
+// which would blank the embedded iframe now that webSecurity is on. Strip
+// frame headers for private-host subframes only.
+function setupFrameHeaderStripping() {
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    try {
+      const host = new URL(details.url).hostname
+      if (details.resourceType === 'subFrame' && PRIVATE_HOST.test(host)) {
+        const headers = { ...details.responseHeaders }
+        for (const k of Object.keys(headers)) {
+          const lk = k.toLowerCase()
+          if (lk === 'x-frame-options' || lk === 'content-security-policy') delete headers[k]
+        }
+        callback({ responseHeaders: headers })
+        return
+      }
+    } catch { /* fall through */ }
+    callback({ responseHeaders: details.responseHeaders })
+  })
+}
+
 // IPC Handlers
+// Renderer-side proxy for LAN services without CORS headers (Home Assistant).
+// Restricted to private hosts so the renderer can't use it as an open proxy.
+ipcMain.handle('net-fetch', async (_, opts: { url: string; method?: string; headers?: Record<string, string>; body?: string; binary?: boolean; timeoutMs?: number }) => {
+  try {
+    const u = new URL(opts.url)
+    if (!['http:', 'https:'].includes(u.protocol) || !PRIVATE_HOST.test(u.hostname)) {
+      return { ok: false, status: 0, error: 'net-fetch is restricted to LAN/localhost services' }
+    }
+    const resp = await fetch(opts.url, {
+      method: opts.method ?? 'GET',
+      headers: opts.headers,
+      body: opts.body,
+      signal: AbortSignal.timeout(opts.timeoutMs ?? 10000),
+    })
+    if (opts.binary) {
+      const buf = Buffer.from(await resp.arrayBuffer())
+      return { ok: resp.ok, status: resp.status, base64: buf.toString('base64'), contentType: resp.headers.get('content-type') ?? '' }
+    }
+    return { ok: resp.ok, status: resp.status, body: await resp.text() }
+  } catch (e: any) {
+    return { ok: false, status: 0, error: e.message }
+  }
+})
+
 ipcMain.handle('exec-command', async (_, command: string) => {
   return new Promise((resolve) => {
     exec(command, (error, stdout, stderr) => {
@@ -236,10 +283,24 @@ app.on('window-all-closed', () => {
   // Do not quit — app lives in the tray
 })
 
+function stopComfyIfConfigured() {
+  // Only kill a ComfyUI we spawned ourselves; a pre-existing instance is the user's business
+  if (comfyProcess?.pid && kvGetSync('vortex-stop-comfy-on-quit') === '1') {
+    try {
+      // Negative pid kills the detached process group (bash + python)
+      process.kill(-comfyProcess.pid, 'SIGTERM')
+      console.log('[Main] Stopped ComfyUI backend on quit')
+    } catch (e) {
+      console.log('[Main] Failed to stop ComfyUI:', e)
+    }
+  }
+}
+
 app.on('before-quit', (event) => {
-  if (!(app as any).isQuiting) {
-    (app as any).isQuiting = true
+  if (!isQuiting) {
+    isQuiting = true
     event.preventDefault()
+    stopComfyIfConfigured()
     // Unload model from VRAM before exit; 3s cap so a stuck Ollama can't block shutdown
     Promise.race([cancelAndPurge(), new Promise(r => setTimeout(r, 3000))])
       .catch(() => {})
@@ -318,6 +379,7 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
+  setupFrameHeaderStripping()
   await startComfyUI()
   createWindow()
   createTray()

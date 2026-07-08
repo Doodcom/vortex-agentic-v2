@@ -31,20 +31,14 @@ import SnapshotView from './components/SnapshotView'
 import HistoryView from './components/HistoryView'
 import DockerView from './components/DockerView'
 import HomeView from './components/HomeView'
-import SandboxView from './components/SandboxView'
 import AutomationsView from './components/AutomationsView'
 import CronView from './components/CronView'
 import SshView from './components/SshView'
 import FirewallView from './components/FirewallView'
-import BenchmarkView from './components/BenchmarkView'
 import VaultView from './components/VaultView'
-import EnvView from './components/EnvView'
-import AppLauncherView from './components/AppLauncherView'
 import HealthReportView from './components/HealthReportView'
 import SchedulerView from './components/SchedulerView'
 import DepGraph from './components/DepGraph'
-import LogAnalysisView from './components/LogAnalysisView'
-import DockerComposeBuilderView from './components/DockerComposeBuilderView'
 import { useTheme } from './components/ThemeProvider'
 import { navItems } from './lib/navigation'
 import { ALERT_THRESHOLDS_KEY, DEFAULT_THRESHOLDS, type AlertThresholds } from './lib/alerts'
@@ -76,7 +70,6 @@ const VIEW_MAP: Record<string, React.ComponentType<ActiveViewProps>> = {
   home: HomeView,
   assistant: AssistantView,
   updates: UpdatesView,
-  sandbox: SandboxView,
   optimizer: OptimizerView,
   cleaner: CleanerView,
   packages: PackagesView,
@@ -84,13 +77,11 @@ const VIEW_MAP: Record<string, React.ComponentType<ActiveViewProps>> = {
   processes: ProcessView,
   services: ServiceView,
   docker: DockerView,
-  'compose-builder': DockerComposeBuilderView,
   network: NetworkView,
   boot: BootView,
   disk: DiskView,
   audit: AuditView,
   logs: LogView,
-  'log-analysis': LogAnalysisView,
   startup: StartupView,
   'image-gen': ImageView,
   'video-gen': VideoView,
@@ -104,10 +95,7 @@ const VIEW_MAP: Record<string, React.ComponentType<ActiveViewProps>> = {
   cron: CronView,
   ssh: SshView,
   firewall: FirewallView,
-  benchmark: BenchmarkView,
   vault: VaultView,
-  env: EnvView,
-  'app-launcher': AppLauncherView,
   health: HealthReportView,
   settings: SettingsPage,
   terminal: TerminalView
@@ -289,7 +277,9 @@ export default function App() {
     // Entering an AI tab from a non-AI tab — boot Ollama service
     if (!isAI && targetAI) {
       console.log('[Vortex] Entering AI tab — starting Ollama service')
-      el?.ollamaServiceStart?.()
+      el?.ollamaServiceStart?.().then((res: { ok: boolean; error?: string }) => {
+        if (!res?.ok) notify('Ollama', `Service failed to start: ${res?.error ?? 'unknown error'}. Check sudoers NOPASSWD for systemctl.`, 'error')
+      }).catch(() => {})
     }
 
     // Leaving all AI tabs to a system tab — stop service to fully free VRAM
