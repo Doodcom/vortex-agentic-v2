@@ -1,6 +1,6 @@
-import { useState, useEffect, useRef, useCallback, type Dispatch, type SetStateAction, type MutableRefObject } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Home, Shield, Bell, Lightbulb, Camera, Power, Activity, ExternalLink, RefreshCw } from 'lucide-react'
+import { Home, Shield, Bell, Lightbulb, Camera, Power, Activity, ExternalLink, RefreshCw, Volume2, VolumeX } from 'lucide-react'
 import { useTheme } from './ThemeProvider'
 import { notify } from '../lib/notifications'
 import { kvGet, kvSet } from '../lib/kv'
@@ -25,8 +25,6 @@ export default function HomeView() {
   const [cameraPreviews, setCameraPreviews] = useState<Record<string, string>>({})
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null)
   const [viewMode, setViewMode] = useState<'devices' | 'portal'>('devices')
-  const [liveRefreshKey, setLiveRefreshKey] = useState(0)
-  const liveRefreshRef = useRef<ReturnType<typeof setInterval> | null>(null)
 
   const fetchCameraPreview = useCallback(async (entityId: string) => {
     if (!haToken || !haIp) return
@@ -355,14 +353,8 @@ export default function HomeView() {
           entityId={selectedEntity}
           haIp={haIp}
           haToken={haToken}
-          onClose={() => {
-            setSelectedEntity(null)
-            if (liveRefreshRef.current) clearInterval(liveRefreshRef.current)
-          }}
+          onClose={() => setSelectedEntity(null)}
           onOpenExternal={handleOpenExternal}
-          liveRefreshKey={liveRefreshKey}
-          setLiveRefreshKey={setLiveRefreshKey}
-          liveRefreshRef={liveRefreshRef}
         />
       )}
 
@@ -395,22 +387,120 @@ export default function HomeView() {
   )
 }
 
-function LiveCameraOverlay({ entityId, haIp, haToken, onClose, onOpenExternal, liveRefreshKey, setLiveRefreshKey, liveRefreshRef }: {
+// Live view via HA's WebRTC signaling API (camera/webrtc/* over the websocket).
+// Ring cameras are WebRTC-only: their MJPEG/HLS proxies replay the last recorded
+// clip instead of going live, so this is the only path to a real live stream.
+function useHaWebRtc(haIp: string, haToken: string, entityId: string, enabled: boolean) {
+  const [stream, setStream] = useState<MediaStream | null>(null)
+  const [status, setStatus] = useState<'connecting' | 'streaming' | 'failed'>('connecting')
+
+  useEffect(() => {
+    if (!enabled) return
+    let disposed = false
+    let pc: RTCPeerConnection | null = null
+    setStatus('connecting')
+    setStream(null)
+
+    const ws = new WebSocket(`${haIp.replace(/^http/, 'ws')}/api/websocket`)
+    let msgId = 0
+    let configId = 0
+    let offerId = 0
+    let sessionId: string | null = null
+    const pendingCandidates: RTCIceCandidateInit[] = []
+    const send = (msg: Record<string, unknown>) => { ws.send(JSON.stringify({ id: ++msgId, ...msg })); return msgId }
+
+    const fail = (why: unknown) => {
+      if (disposed) return
+      console.error(`WebRTC stream failed for ${entityId}`, why)
+      setStatus('failed')
+    }
+    const timeout = setTimeout(() => fail('timed out negotiating stream'), 15000)
+
+    const sendCandidate = (candidate: RTCIceCandidateInit) =>
+      send({ type: 'camera/webrtc/candidate', entity_id: entityId, session_id: sessionId, candidate })
+
+    ws.onerror = () => fail('websocket error')
+    ws.onmessage = async (ev) => {
+      if (disposed) return
+      try {
+        const msg = JSON.parse(ev.data)
+        if (msg.type === 'auth_required') {
+          ws.send(JSON.stringify({ type: 'auth', access_token: haToken }))
+        } else if (msg.type === 'auth_invalid') {
+          fail('auth rejected')
+        } else if (msg.type === 'auth_ok') {
+          configId = send({ type: 'camera/webrtc/get_client_config', entity_id: entityId })
+        } else if (msg.type === 'result' && msg.id === configId) {
+          if (!msg.success) return fail(msg.error)
+          pc = new RTCPeerConnection(msg.result.configuration)
+          pc.addTransceiver('video', { direction: 'recvonly' })
+          pc.addTransceiver('audio', { direction: 'recvonly' })
+          pc.ontrack = (e) => {
+            if (disposed) return
+            clearTimeout(timeout)
+            setStream(e.streams[0] ?? new MediaStream([e.track]))
+            setStatus('streaming')
+          }
+          pc.onicecandidate = (e) => {
+            if (!e.candidate?.candidate) return
+            // HA rejects candidates until the 'session' event delivers a session_id
+            if (sessionId) sendCandidate(e.candidate.toJSON())
+            else pendingCandidates.push(e.candidate.toJSON())
+          }
+          const offer = await pc.createOffer()
+          await pc.setLocalDescription(offer)
+          offerId = send({ type: 'camera/webrtc/offer', entity_id: entityId, offer: offer.sdp })
+        } else if (msg.type === 'result' && msg.id === offerId && !msg.success) {
+          fail(msg.error)
+        } else if (msg.type === 'event' && msg.id === offerId) {
+          const event = msg.event
+          if (event.type === 'session') {
+            sessionId = event.session_id
+            pendingCandidates.splice(0).forEach(sendCandidate)
+          } else if (event.type === 'answer') {
+            await pc?.setRemoteDescription({ type: 'answer', sdp: event.answer })
+          } else if (event.type === 'candidate') {
+            await pc?.addIceCandidate(event.candidate)
+          } else if (event.type === 'error') {
+            fail(`${event.code}: ${event.message}`)
+          }
+        }
+      } catch (e) { fail(e) }
+    }
+
+    return () => {
+      disposed = true
+      clearTimeout(timeout)
+      pc?.close()
+      if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close()
+    }
+  }, [haIp, haToken, entityId, enabled])
+
+  return { stream, status }
+}
+
+function LiveCameraOverlay({ entityId, haIp, haToken, onClose, onOpenExternal }: {
   entityId: string
   haIp: string
   haToken: string
   onClose: () => void
   onOpenExternal: (url: string) => void
-  liveRefreshKey: number
-  setLiveRefreshKey: Dispatch<SetStateAction<number>>
-  liveRefreshRef: MutableRefObject<ReturnType<typeof setInterval> | null>
 }) {
-  const [autoRefresh, setAutoRefresh] = useState(true)
-  const [liveSrc, setLiveSrc] = useState<string | null>(null)
+  const [playing, setPlaying] = useState(true)
+  const [muted, setMuted] = useState(true)
+  const { stream, status } = useHaWebRtc(haIp, haToken, entityId, playing)
+  const streamFailed = status === 'failed'
+  const [snapshotSrc, setSnapshotSrc] = useState<string | null>(null)
+  const [snapshotKey, setSnapshotKey] = useState(0)
+  const videoRef = useRef<HTMLVideoElement | null>(null)
 
-  // HA camera_proxy requires Bearer auth header — <img src> can't send headers,
-  // so we fetch via the main process → data URL on each refresh tick.
   useEffect(() => {
+    if (videoRef.current) videoRef.current.srcObject = stream
+  }, [stream])
+
+  // Snapshot fallback: poll camera_proxy via the main process → data URL.
+  useEffect(() => {
+    if (!streamFailed) return
     let cancelled = false
     const fetchFrame = async () => {
       try {
@@ -420,23 +510,21 @@ function LiveCameraOverlay({ entityId, haIp, haToken, onClose, onOpenExternal, l
           binary: true,
         })
         if (!resp.ok || !resp.base64 || cancelled) return
-        setLiveSrc(`data:${resp.contentType || 'image/jpeg'};base64,${resp.base64}`)
+        setSnapshotSrc(`data:${resp.contentType || 'image/jpeg'};base64,${resp.base64}`)
       } catch { /* network error — overlay stays on last frame */ }
     }
     fetchFrame()
     return () => { cancelled = true }
-  }, [liveRefreshKey, entityId, haIp, haToken])
+  }, [streamFailed, snapshotKey, entityId, haIp, haToken])
 
   useEffect(() => {
-    if (autoRefresh) {
-      liveRefreshRef.current = setInterval(() => {
-        setLiveRefreshKey(k => k + 1)
-      }, 1500)
-    } else {
-      if (liveRefreshRef.current) clearInterval(liveRefreshRef.current)
-    }
-    return () => { if (liveRefreshRef.current) clearInterval(liveRefreshRef.current) }
-  }, [autoRefresh, liveRefreshRef, setLiveRefreshKey])
+    if (!streamFailed || !playing) return
+    const interval = setInterval(() => setSnapshotKey(k => k + 1), 1500)
+    return () => clearInterval(interval)
+  }, [streamFailed, playing])
+
+  const isLive = playing && status === 'streaming'
+  const statusText = !playing ? '· PAUSED' : streamFailed ? '· SNAPSHOT · 1.5s refresh' : status === 'streaming' ? '· LIVE · WebRTC' : '· CONNECTING'
 
   return createPortal(
     <div style={{ position: 'fixed', inset: 0, zIndex: 9999, background: 'rgba(0,0,0,0.9)', backdropFilter: 'blur(10px)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: '40px' }}>
@@ -444,22 +532,32 @@ function LiveCameraOverlay({ entityId, haIp, haToken, onClose, onOpenExternal, l
         {/* Header */}
         <div style={{ padding: '14px 24px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(255,255,255,0.02)', flexShrink: 0 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: autoRefresh ? '#ef4444' : '#52525b', boxShadow: autoRefresh ? '0 0 10px #ef4444' : 'none', animation: autoRefresh ? 'pulse-dot 2s infinite' : 'none' }} />
+            <div style={{ width: '8px', height: '8px', borderRadius: '50%', background: isLive ? '#ef4444' : '#52525b', boxShadow: isLive ? '0 0 10px #ef4444' : 'none', animation: isLive ? 'pulse-dot 2s infinite' : 'none' }} />
             <span style={{ fontSize: '11px', fontWeight: 'bold', color: 'white', fontFamily: 'monospace', textTransform: 'uppercase', letterSpacing: '0.15em' }}>
               {entityId.replace('camera.', '').replace(/_/g, ' ')}
             </span>
             <span style={{ fontSize: '8px', color: '#52525b', fontFamily: 'monospace' }}>
-              {autoRefresh ? '· LIVE · 1.5s refresh' : '· PAUSED'}
+              {statusText}
             </span>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {isLive && (
+              <button
+                onClick={() => setMuted(v => !v)}
+                title={muted ? 'Unmute audio' : 'Mute audio'}
+                style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', borderRadius: '8px', background: muted ? 'rgba(255,255,255,0.05)' : 'rgba(34,211,238,0.1)', border: `1px solid ${muted ? 'rgba(255,255,255,0.1)' : 'rgba(34,211,238,0.25)'}`, color: muted ? '#71717a' : '#22d3ee', fontSize: '9px', fontWeight: 'bold', cursor: 'pointer' }}
+              >
+                {muted ? <VolumeX size={10} /> : <Volume2 size={10} />}
+                {muted ? 'UNMUTE' : 'MUTE'}
+              </button>
+            )}
             <button
-              onClick={() => setAutoRefresh(v => !v)}
-              title={autoRefresh ? 'Pause refresh' : 'Resume live refresh'}
-              style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', borderRadius: '8px', background: autoRefresh ? 'rgba(34,211,238,0.1)' : 'rgba(255,255,255,0.05)', border: `1px solid ${autoRefresh ? 'rgba(34,211,238,0.25)' : 'rgba(255,255,255,0.1)'}`, color: autoRefresh ? '#22d3ee' : '#71717a', fontSize: '9px', fontWeight: 'bold', cursor: 'pointer' }}
+              onClick={() => setPlaying(v => !v)}
+              title={playing ? 'Pause stream' : 'Resume live stream'}
+              style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '5px 12px', borderRadius: '8px', background: playing ? 'rgba(34,211,238,0.1)' : 'rgba(255,255,255,0.05)', border: `1px solid ${playing ? 'rgba(34,211,238,0.25)' : 'rgba(255,255,255,0.1)'}`, color: playing ? '#22d3ee' : '#71717a', fontSize: '9px', fontWeight: 'bold', cursor: 'pointer' }}
             >
               <RefreshCw size={10} />
-              {autoRefresh ? 'PAUSE' : 'RESUME'}
+              {playing ? 'PAUSE' : 'RESUME'}
             </button>
             <button
               onClick={() => onOpenExternal(`${haIp}/lovelace/0`)}
@@ -477,18 +575,28 @@ function LiveCameraOverlay({ entityId, haIp, haToken, onClose, onOpenExternal, l
           </div>
         </div>
 
-        {/* Camera image */}
-        <div style={{ flex: 1, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden' }}>
-          {liveSrc ? (
+        {/* Camera stream */}
+        <div style={{ flex: 1, background: '#000', display: 'flex', alignItems: 'center', justifyContent: 'center', overflow: 'hidden', position: 'relative' }}>
+          {!streamFailed && (
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              muted={muted}
+              style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
+            />
+          )}
+          {streamFailed && snapshotSrc && (
             <img
-              src={liveSrc}
+              src={snapshotSrc}
               alt={entityId}
               style={{ maxWidth: '100%', maxHeight: '100%', objectFit: 'contain' }}
             />
-          ) : (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '12px', color: '#52525b' }}>
+          )}
+          {((streamFailed && !snapshotSrc) || (!streamFailed && status !== 'streaming')) && (
+            <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: '12px', color: '#52525b', pointerEvents: 'none' }}>
               <Camera size={32} />
-              <span style={{ fontSize: '10px', fontFamily: 'monospace' }}>Fetching frame...</span>
+              <span style={{ fontSize: '10px', fontFamily: 'monospace' }}>{playing ? 'Negotiating WebRTC session...' : 'Paused'}</span>
             </div>
           )}
         </div>
@@ -496,10 +604,10 @@ function LiveCameraOverlay({ entityId, haIp, haToken, onClose, onOpenExternal, l
         {/* Footer */}
         <div style={{ padding: '8px 24px', borderTop: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(0,0,0,0.2)', flexShrink: 0 }}>
           <span style={{ fontSize: '9px', color: '#3f3f46', fontFamily: 'monospace' }}>
-            {haIp}/api/camera_proxy/{entityId} · Bearer auth
+            {streamFailed ? `${haIp}/api/camera_proxy/${entityId}` : `${haIp.replace(/^http/, 'ws')}/api/websocket · camera/webrtc/offer`}
           </span>
           <span style={{ fontSize: '9px', color: '#52525b', fontFamily: 'monospace' }}>
-            FRAME #{liveRefreshKey}
+            {streamFailed ? `FRAME #${snapshotKey}` : 'WebRTC · peer-to-peer via Ring'}
           </span>
         </div>
       </div>
