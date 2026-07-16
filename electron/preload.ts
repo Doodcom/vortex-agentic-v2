@@ -230,6 +230,16 @@ contextBridge.exposeInMainWorld('electron', {
   kvSet: (key: string, value: string) => ipcRenderer.invoke('kv-set', { key, value }),
   kvDelete: (key: string) => ipcRenderer.invoke('kv-delete', key),
 
+  // Ring clip history (direct Ring cloud API)
+  ringAuthStatus: () => ipcRenderer.invoke('ring-auth-status'),
+  ringAuthStart: (opts: { email: string; password: string }) => ipcRenderer.invoke('ring-auth-start', opts),
+  ringAuth2fa: (opts: { code: string }) => ipcRenderer.invoke('ring-auth-2fa', opts),
+  ringLogout: () => ipcRenderer.invoke('ring-logout'),
+  ringListCameras: () => ipcRenderer.invoke('ring-list-cameras'),
+  ringGetHistory: (opts: { cameraId: number; dateFrom: number; dateTo: number }) => ipcRenderer.invoke('ring-get-history', opts),
+  ringGetRecordingUrl: (opts: { cameraId: number; dingId: string }) => ipcRenderer.invoke('ring-get-recording-url', opts),
+  ringGetThumbnail: (opts: { dingId: string; url: string }) => ipcRenderer.invoke('ring-get-thumbnail', opts),
+
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
   showContextMenu: (props: any) => ipcRenderer.invoke('show-context-menu', props)
 })

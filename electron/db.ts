@@ -198,6 +198,18 @@ export function kvGetSync(key: string): string | null {
   return (db.prepare('SELECT value FROM kv_store WHERE key = ?').get(key) as { value: string } | undefined)?.value ?? null
 }
 
+export function kvSetSync(key: string, value: string): void {
+  if (!db) return
+  db.prepare(
+    'INSERT INTO kv_store (key, value, updated_at) VALUES (?, ?, unixepoch()) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = unixepoch()'
+  ).run(key, value)
+}
+
+export function kvDeleteSync(key: string): void {
+  if (!db) return
+  db.prepare('DELETE FROM kv_store WHERE key = ?').run(key)
+}
+
 export function getMemoriesList(): string[] {
   if (!db) return []
   return (db.prepare('SELECT fact FROM ai_memory ORDER BY id ASC').all() as any[]).map((r: any) => r.fact)

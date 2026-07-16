@@ -1,3 +1,15 @@
+export interface RingClip {
+  id: string
+  cameraId: number
+  cameraName: string
+  kind: string
+  createdAt: number
+  duration: number
+  url: string
+  thumbnailUrl: string
+  favorite: boolean
+}
+
 export interface SystemNetworkStats {
   rx_sec: number;
   tx_sec: number;
@@ -437,6 +449,16 @@ export interface ElectronAPI {
   kvGet: (key: string) => Promise<string | null>
   kvSet: (key: string, value: string) => Promise<{ success: boolean }>
   kvDelete: (key: string) => Promise<{ success: boolean }>
+
+  // Ring clip history (direct Ring cloud API)
+  ringAuthStatus: () => Promise<{ authenticated: boolean; email: string | null }>
+  ringAuthStart: (opts: { email: string; password: string }) => Promise<{ ok: boolean; need2fa?: boolean; prompt?: string; error?: string }>
+  ringAuth2fa: (opts: { code: string }) => Promise<{ ok: boolean; error?: string }>
+  ringLogout: () => Promise<{ ok: boolean }>
+  ringListCameras: () => Promise<{ id: number; name: string; kind: string; battery: number | null }[]>
+  ringGetHistory: (opts: { cameraId: number; dateFrom: number; dateTo: number }) => Promise<RingClip[]>
+  ringGetRecordingUrl: (opts: { cameraId: number; dingId: string }) => Promise<string>
+  ringGetThumbnail: (opts: { dingId: string; url: string }) => Promise<string>
 
   openExternal: (url: string) => Promise<{ success: boolean }>
   showContextMenu: (props: ContextMenuProps) => Promise<void>

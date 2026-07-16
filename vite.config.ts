@@ -19,6 +19,8 @@ export default defineConfig({
                 'systeminformation',
                 'better-sqlite3',
                 'axios',
+                'ring-client-api',
+                'ring-client-api/rest-client',
                 /^node:.*$/,
               ],
             },

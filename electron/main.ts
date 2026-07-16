@@ -11,6 +11,7 @@ import { setupSystemHandlers } from './system'
 import { setupRagHandlers } from './rag'
 import { setupDbHandlers, startResourcePoller, kvGetSync } from './db'
 import { setupPtyHandlers } from './pty'
+import { setupRingHandlers } from './ring'
 import { guardian } from './VortexGuardian'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -128,6 +129,7 @@ function createWindow() {
     setupDbHandlers()
     startResourcePoller()
     setupPtyHandlers(win)
+    setupRingHandlers()
     guardian.init(win)
   }
 }

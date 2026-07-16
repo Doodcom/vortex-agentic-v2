@@ -4,6 +4,7 @@ import { Home, Shield, Bell, Lightbulb, Camera, Power, Activity, ExternalLink, R
 import { useTheme } from './ThemeProvider'
 import { notify } from '../lib/notifications'
 import { kvGet, kvSet } from '../lib/kv'
+import RingClipsView from './RingClipsView'
 
 interface HAEntity {
   entity_id: string
@@ -24,7 +25,7 @@ export default function HomeView() {
   const [isLoadingEntities, setIsLoadingEntities] = useState(false)
   const [cameraPreviews, setCameraPreviews] = useState<Record<string, string>>({})
   const [selectedEntity, setSelectedEntity] = useState<string | null>(null)
-  const [viewMode, setViewMode] = useState<'devices' | 'portal'>('devices')
+  const [viewMode, setViewMode] = useState<'devices' | 'clips' | 'portal'>('devices')
 
   const fetchCameraPreview = useCallback(async (entityId: string) => {
     if (!haToken || !haIp) return
@@ -142,7 +143,13 @@ export default function HomeView() {
         >
           DEVICE FEED
         </button>
-        <button 
+        <button
+          onClick={() => { setViewMode('clips'); playSound('click'); }}
+          style={{ padding: '8px 20px', borderRadius: '8px', border: 'none', background: viewMode === 'clips' ? 'rgba(34,211,238,0.1)' : 'transparent', color: viewMode === 'clips' ? '#22d3ee' : '#52525b', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s' }}
+        >
+          CLIP HISTORY
+        </button>
+        <button
           onClick={() => { setViewMode('portal'); playSound('click'); }}
           style={{ padding: '8px 20px', borderRadius: '8px', border: 'none', background: viewMode === 'portal' ? 'rgba(34,211,238,0.1)' : 'transparent', color: viewMode === 'portal' ? '#22d3ee' : '#52525b', fontSize: '11px', fontWeight: 'bold', cursor: 'pointer', transition: 'all 0.2s' }}
         >
@@ -150,7 +157,9 @@ export default function HomeView() {
         </button>
       </div>
 
-      {viewMode === 'portal' ? (
+      {viewMode === 'clips' ? (
+        <RingClipsView />
+      ) : viewMode === 'portal' ? (
         <div className="v-card" style={{ padding: 0, height: '70vh', overflow: 'hidden' }}>
           <div style={{ padding: '12px 20px', borderBottom: '1px solid rgba(255,255,255,0.05)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(255,255,255,0.02)' }}>
              <div style={{ fontSize: '10px', color: '#71717a', fontWeight: 'bold', fontFamily: 'monospace' }}>SECURE SESSION TERMINAL</div>

@@ -80,6 +80,7 @@
     "rehype-katex": "^7.0.1",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
+    "ring-client-api": "^14.3.0",
     "shiki": "^4.0.2",
     "systeminformation": "^5.31.5",
     "tailwind-merge": "^3.5.0"
