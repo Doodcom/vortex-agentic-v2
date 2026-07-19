@@ -397,7 +397,7 @@ export interface ElectronAPI {
   guardianStatus: () => Promise<{ enabled: boolean; activeOptimization: string }>
 
   // RAG
-  ragSelectProject: () => Promise<{ path: string; fileCount: number; cached?: boolean; indexing?: boolean } | null>
+  ragSelectProject: () => Promise<{ path: string; fileCount: number; cached?: boolean; indexing?: boolean; error?: string } | null>
   ragGetContext: (query: string) => Promise<string>
   ragStatus: () => Promise<{ path: string | null; fileCount: number }>
   ragClearCache: () => Promise<{ success: boolean }>

@@ -211,6 +211,7 @@ export default function AssistantView() {
     setIsScanning(true)
     try {
       const res = await window.electron.ragSelectProject()
+      if (res?.error) { notify('Project RAG', res.error, 'error'); return }
       if (res) setProject(res)
     } finally {
       setIsScanning(false)

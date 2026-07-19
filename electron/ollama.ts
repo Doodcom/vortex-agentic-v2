@@ -440,9 +440,15 @@ async function buildSystemPrompt(model?: string): Promise<string> {
     const ctxK = model ? Math.round(getModelOptions(model).num_ctx / 1024) : 16
     const home = homedir()
     const username = userInfo().username
+    let projectLine = ''
+    try {
+      const { getActiveProjectPath } = await import('./rag')
+      const projectPath = getActiveProjectPath()
+      if (projectPath) projectLine = `\nACTIVE PROJECT: ${projectPath} — treat this directory as the working root for shell commands and file paths. Never guess paths like ${home}/src.`
+    } catch { /* rag module unavailable — no project context */ }
     return `You are Quantum, an expert Linux administrator assistant.
 OS: ${osInfo.distro} ${osInfo.release} | CPU: ${cpu.brand} | RAM: ${Math.round(mem.total / 1e9)}GB
-USER: ${username} | HOME: ${home}
+USER: ${username} | HOME: ${home}${projectLine}
 CONTEXT: ${ctxK}k tokens
 RULES:
 - ONLY use tools when necessary to fulfill a specific request. Do NOT use tools for greetings, thanks, or general conversation.

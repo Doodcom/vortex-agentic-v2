@@ -178,34 +178,48 @@ export function useOllama() {
       setModels(VORTEX_MODELS.map(m => ({ ...m, installed: true })))
       return
     }
-    try {
-      const list = await window.electron.ollamaListModels()
-      
-      // Map our professional tier labels to what is actually installed
-      const merged = VORTEX_MODELS.map(vm => {
-        const found = list.find((m) => m.name === vm.name)
-        return {
-          ...vm,
-          size: found ? found.size : vm.size,
-          installed: !!found
+    async function attemptFetch(attempt: number): Promise<void> {
+      try {
+        const list = await window.electron.ollamaListModels()
+
+        // Ollama starts on AI-tab entry, so the first fetch can race the service boot and
+        // come back empty — retry instead of stamping every model "Not Downloaded".
+        if (list.length === 0 && attempt < 10) {
+          setTimeout(() => attemptFetch(attempt + 1), 2000)
+          return
         }
-      })
 
-      // Also include models that are installed but NOT in our VORTEX_MODELS list.
-      // Use the full tagged name as the label so we don't get duplicate "qwen2.5-coder" entries.
-      const others = list
-        .filter((m) => !VORTEX_MODELS.some(vm => vm.name === m.name))
-        .map((m) => ({
-          name: m.name,
-          size: m.size,
-          label: m.name.replace(':latest', ''),
-          installed: true
-        }))
+        // Map our professional tier labels to what is actually installed
+        const merged = VORTEX_MODELS.map(vm => {
+          const found = list.find((m) => m.name === vm.name)
+          return {
+            ...vm,
+            size: found ? found.size : vm.size,
+            installed: !!found
+          }
+        })
 
-      setModels([...merged, ...others])
-    } catch {
-      setModels(VORTEX_MODELS.map(m => ({ ...m, installed: false })))
+        // Also include models that are installed but NOT in our VORTEX_MODELS list.
+        // Use the full tagged name as the label so we don't get duplicate "qwen2.5-coder" entries.
+        const others = list
+          .filter((m) => !VORTEX_MODELS.some(vm => vm.name === m.name))
+          .map((m) => ({
+            name: m.name,
+            size: m.size,
+            label: m.name.replace(':latest', ''),
+            installed: true
+          }))
+
+        setModels([...merged, ...others])
+      } catch {
+        if (attempt < 10) {
+          setTimeout(() => attemptFetch(attempt + 1), 2000)
+          return
+        }
+        setModels(VORTEX_MODELS.map(m => ({ ...m, installed: false })))
+      }
     }
+    await attemptFetch(0)
   }, [])
 
   useEffect(() => {

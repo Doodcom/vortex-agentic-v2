@@ -27,6 +27,11 @@ interface Chunk {
 let fileIndex: string[] = []
 let currentProjectPath: string | null = null
 
+// Read by ollama.ts to give the agent the real project root for shell commands.
+export function getActiveProjectPath(): string | null {
+  return currentProjectPath
+}
+
 function buildChunks(file: ProjectFile): Chunk[] {
   const chunks: Chunk[] = []
   let start = 0
@@ -93,6 +98,12 @@ export function setupRagHandlers(win: BrowserWindow) {
   ipcMain.handle('rag-select-project', async () => {
     const { canceled, filePaths } = await dialog.showOpenDialog({ properties: ['openDirectory'] })
     if (canceled || filePaths.length === 0) return null
+
+    // Indexing the raw home dir sweeps in Documents/Downloads/etc and drowns retrieval quality.
+    const os = await import('node:os')
+    if (path.resolve(filePaths[0]) === path.resolve(os.homedir())) {
+      return { error: 'Refusing to index your entire home directory — pick a specific project folder instead.' }
+    }
 
     currentProjectPath = filePaths[0]
 
