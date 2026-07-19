@@ -153,7 +153,7 @@ class VortexGuardian {
 
   private notifyRenderer(title: string, message: string, type: 'success' | 'info' | 'error') {
     if (this.win) {
-      this.win.webContents.send('notification', { title, message, type })
+      this.win.webContents.send('vortex-notify', { title, message, type })
     }
   }
 }
