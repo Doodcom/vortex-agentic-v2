@@ -17,7 +17,8 @@
     "preview": "vite preview",
     "build:electron": "electron-builder",
     "rebuild:native": "bash scripts/rebuild-native.sh",
-    "test:e2e": "node tests/run-all.js"
+    "test:e2e": "node tests/run-all.js",
+    "mcp": "node scripts/vortex-mcp.mjs"
   },
   "build": {
     "appId": "com.vortex.agentic.v2",
