@@ -12,6 +12,8 @@ export default function UpdatesView() {
   const [isFlashing, setIsFlashing] = useState(false)
   const [lastChecked, setLastChecked] = useState<Date | null>(null)
   const [upgradeLog, setUpgradeLog] = useState<string[]>([])
+  // Lines trimmed off the top of the rolling log buffer, so gutter numbers stay absolute
+  const droppedLinesRef = useRef(0)
   const logEndRef = useRef<HTMLDivElement>(null)
 
   const checkUpdates = async () => {
@@ -36,6 +38,7 @@ export default function UpdatesView() {
 
   const handleFirmwareUpdate = async () => {
     setIsFlashing(true)
+    droppedLinesRef.current = 0
     setUpgradeLog(['> Initializing device firmware flash via fwupd...'])
     try {
       const res = await (window as any).electron.systemFirmwareUpdate()
@@ -56,7 +59,10 @@ export default function UpdatesView() {
           const lines = text.split('\n').filter(l => l.trim())
           const newLog = [...prev, ...lines]
           // Keep only last 200 lines to prevent renderer lag/crash
-          if (newLog.length > 200) return newLog.slice(-200)
+          if (newLog.length > 200) {
+            droppedLinesRef.current += newLog.length - 200
+            return newLog.slice(-200)
+          }
           return newLog
         })
       })
@@ -72,6 +78,7 @@ export default function UpdatesView() {
 
   const handleUpgrade = async () => {
     setIsUpgrading(true)
+    droppedLinesRef.current = 0
     setUpgradeLog(['> Starting system package upgrade...'])
     try {
       const sysRes = await (window as any).electron.systemUpgrade()
@@ -92,6 +99,7 @@ export default function UpdatesView() {
 
   const handleAISync = async () => {
     setIsSyncingAI(true)
+    droppedLinesRef.current = 0
     setUpgradeLog(['> Initializing AI component synchronization...'])
     try {
       const aiRes = await (window as any).electron.aiUpdateComponents()
@@ -262,7 +270,7 @@ export default function UpdatesView() {
             }}>
               {upgradeLog.map((line, i) => (
                 <div key={i} style={{ display: 'flex', gap: '10px' }}>
-                  <span style={{ opacity: 0.3 }}>{(i + 1).toString().padStart(3, '0')}</span>
+                  <span style={{ opacity: 0.3 }}>{(droppedLinesRef.current + i + 1).toString().padStart(3, '0')}</span>
                   <span>{line}</span>
                 </div>
               ))}

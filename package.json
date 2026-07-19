@@ -1,7 +1,7 @@
 {
   "name": "vortex-agentic-v2",
   "private": true,
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "Vortex Agentic V2 - Quantum AI & Motion Engine Suite",
   "author": {
     "name": "doodcom",
@@ -29,6 +29,12 @@
     "files": [
       "dist",
       "dist-electron"
+    ],
+    "extraResources": [
+      {
+        "from": "build/icons/128x128.png",
+        "to": "icon.png"
+      }
     ],
     "linux": {
       "target": [
