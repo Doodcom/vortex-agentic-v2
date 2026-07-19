@@ -10,3 +10,4 @@ release/
 .agents/
 .claude/
 lint_output.txt
+graphify-out/
