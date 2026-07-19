@@ -1,0 +1,65 @@
+# Maintainer: doodcom <a.munro87@icloud.com>
+# Build from a local checkout:
+#   cd packaging && makepkg -si
+# (source points at the repo root one level up; for AUR publishing swap the
+# source line for the GitHub URL and add proper pkgver bumping.)
+
+pkgname=vortex-agentic-v2
+pkgver=1.0.0
+pkgrel=1
+pkgdesc="Linux system management desktop app with fully local AI (Ollama + ComfyUI) for CachyOS"
+arch=('x86_64')
+url="https://github.com/Doodcom/vortex-agentic-v2"
+license=('custom')
+depends=('nss' 'libxtst' 'libxss' 'gtk3' 'mesa' 'alsa-lib')
+makedepends=('git' 'nodejs' 'npm')
+optdepends=(
+  'ollama: local LLM inference for the AI suite'
+  'fwupd: device firmware updates in the Updater'
+  'snapper: pre-upgrade Btrfs snapshots'
+  'ufw: firewall view'
+  'paru: AUR update checks'
+  'pacman-contrib: checkupdates for update checks'
+)
+source=("$pkgname::git+file://$(cd "$(dirname "$BASH_SOURCE")/.." && pwd)")
+sha256sums=('SKIP')
+
+build() {
+  cd "$srcdir/$pkgname"
+  npm ci --legacy-peer-deps
+  npm run build
+  # dir target produces release/linux-unpacked with natives rebuilt for the bundled Electron
+  npx electron-builder --linux dir
+}
+
+package() {
+  cd "$srcdir/$pkgname"
+
+  # App payload
+  install -d "$pkgdir/opt/$pkgname"
+  cp -r release/linux-unpacked/. "$pkgdir/opt/$pkgname/"
+  chmod 4755 "$pkgdir/opt/$pkgname/chrome-sandbox"
+
+  # Launcher with the same GPU/Wayland flags electron-builder bakes into its own targets
+  install -d "$pkgdir/usr/bin"
+  cat > "$pkgdir/usr/bin/$pkgname" <<'EOF'
+#!/usr/bin/env bash
+exec /opt/vortex-agentic-v2/vortex-agentic-v2 \
+  --ozone-platform-hint=auto \
+  --enable-features=VaapiVideoDecodeLinuxGL,UseOzonePlatform,WaylandWindowDecorations \
+  --use-gl=egl \
+  --enable-gpu-rasterization \
+  "$@"
+EOF
+  chmod 755 "$pkgdir/usr/bin/$pkgname"
+
+  # Desktop entry + icon
+  install -Dm644 packaging/$pkgname.desktop "$pkgdir/usr/share/applications/$pkgname.desktop"
+  install -Dm644 public/favicon.svg "$pkgdir/usr/share/icons/hicolor/scalable/apps/vortex-agentic.svg"
+
+  # Polkit rule: one auth per maintenance run instead of one per pkexec call
+  install -Dm644 resources/polkit/49-vortex-agentic.rules "$pkgdir/etc/polkit-1/rules.d/49-vortex-agentic.rules"
+
+  # MCP server for external agents
+  install -Dm755 scripts/vortex-mcp.mjs "$pkgdir/opt/$pkgname/vortex-mcp.mjs"
+}

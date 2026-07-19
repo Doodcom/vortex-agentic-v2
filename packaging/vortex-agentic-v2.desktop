@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Vortex Agentic V2
+Comment=CachyOS system management with local AI (Ollama + ComfyUI)
+Exec=vortex-agentic-v2 %U
+Icon=vortex-agentic
+Terminal=false
+Categories=Utility;System;
+StartupWMClass=Vortex Agentic V2
