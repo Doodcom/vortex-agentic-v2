@@ -2,7 +2,7 @@ import { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, dialog, shell, se
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { exec, spawn, type ChildProcess } from 'node:child_process'
-import { readFileSync, openSync } from 'node:fs'
+import { readFileSync, openSync, existsSync } from 'node:fs'
 import http from 'node:http'
 import os from 'node:os'
 import si from 'systeminformation'
@@ -56,10 +56,13 @@ async function startComfyUI() {
 }
 
 function createTray() {
-  const iconPath = path.join(
-    process.env.HOME || os.homedir(),
-    '.local/share/icons/hicolor/48x48/apps/vortex-agentic.png'
-  )
+  // Prefer the packaged red-V icon; fall back to the legacy user-local one.
+  const candidates = [
+    '/usr/share/icons/hicolor/128x128/apps/vortex-agentic-v2.png',
+    path.join(process.env.HOME || os.homedir(), '.local/share/icons/hicolor/128x128/apps/vortex.png'),
+    path.join(process.env.HOME || os.homedir(), '.local/share/icons/hicolor/48x48/apps/vortex-agentic.png'),
+  ]
+  const iconPath = candidates.find(p => existsSync(p)) ?? candidates[0]
   const icon = nativeImage.createFromPath(iconPath)
   tray = new Tray(icon.isEmpty() ? nativeImage.createEmpty() : icon)
   tray.setToolTip('Vortex Agentic')
