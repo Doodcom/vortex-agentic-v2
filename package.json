@@ -63,7 +63,7 @@
         "libxtst",
         "libxss",
         "gtk3",
-        "libgbm",
+        "mesa",
         "alsa-lib"
       ]
     }
