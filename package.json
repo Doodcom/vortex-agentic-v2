@@ -1,7 +1,7 @@
 {
   "name": "vortex-agentic-v2",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Vortex Agentic V2 - Quantum AI & Motion Engine Suite",
   "author": {
     "name": "doodcom",
@@ -45,6 +45,7 @@
           ]
         }
       ],
+      "icon": "build/icons",
       "category": "Utility",
       "executableArgs": [
         "--ozone-platform-hint=auto",
