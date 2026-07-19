@@ -2,8 +2,8 @@ import {
   LayoutDashboard, Zap, Trash2, Rocket,
   Package, MessageSquare,
   Terminal as TerminalIcon, Settings, Server, Activity, Wifi,
-  Clock, HardDrive, ShieldCheck, ScrollText, Power, Sparkles, Video, Box, Layers,
-  Library, Brain, Home, Cpu, BotMessageSquare, Camera, LineChart, GitBranch, CalendarClock, KeyRound, FlameKindling, Archive, HeartPulse
+  Clock, HardDrive, ShieldCheck, ScrollText, Sparkles, Video, Box, Layers,
+  Library, Brain, Home, Cpu, BotMessageSquare, Camera, LineChart, GitBranch, KeyRound, FlameKindling, Archive, HeartPulse
 } from 'lucide-react'
 
 export interface NavItem {
@@ -67,14 +67,12 @@ export const navCategories: NavCategory[] = [
       { id: 'health',    label: 'Health Report', icon: HeartPulse },
       { id: 'audit',     label: 'Audit Log',     icon: ShieldCheck },
       { id: 'logs',      label: 'Log Viewer',    icon: ScrollText },
-      { id: 'startup',   label: 'Startup Apps',  icon: Power },
     ]
   },
   {
     label: 'Automation',
     items: [
-      { id: 'automations', label: 'Workflows', icon: GitBranch },
-      { id: 'cron', label: 'Cron Jobs', icon: CalendarClock },
+      { id: 'automations', label: 'Automation', icon: GitBranch },
       { id: 'ssh', label: 'SSH Keys', icon: KeyRound },
       { id: 'firewall', label: 'Firewall (UFW)', icon: FlameKindling },
       { id: 'vault', label: 'Dotfile Vault', icon: Archive },

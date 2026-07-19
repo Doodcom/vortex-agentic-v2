@@ -1,45 +1,44 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, lazy, Suspense } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 
 import Sidebar from './components/Sidebar'
 import Header from './components/Header'
-import DashboardView from './components/DashboardView'
-import AssistantView from './components/AssistantView'
-import UpdatesView from './components/UpdatesView'
-import CleanerView from './components/CleanerView'
-import OptimizerView from './components/OptimizerView'
-import TerminalView from './components/TerminalView'
-import SettingsPage from './components/SettingsPage'
-import ServiceView from './components/ServiceView'
-import ProcessView from './components/ProcessView'
-import NetworkView from './components/NetworkView'
-import BootView from './components/BootView'
-import DiskView from './components/DiskView'
-import AuditView from './components/AuditView'
-import PackagesView from './components/PackagesView'
 import CommandPalette from './components/CommandPalette'
 import ShortcutsOverlay from './components/ShortcutsOverlay'
 import StatusBar from './components/StatusBar'
-import LogView from './components/LogView'
-import StartupView from './components/StartupView'
-import ImageView from './components/ImageView'
-import VideoView from './components/VideoView'
-import GalleryView from './components/GalleryView'
-import MemoryView from './components/MemoryView'
-import OllamaModelsView from './components/OllamaModelsView'
-import SnapshotView from './components/SnapshotView'
-import HistoryView from './components/HistoryView'
-import DockerView from './components/DockerView'
-import HomeView from './components/HomeView'
-import AutomationsView from './components/AutomationsView'
-import CronView from './components/CronView'
-import SshView from './components/SshView'
-import FirewallView from './components/FirewallView'
-import VaultView from './components/VaultView'
-import HealthReportView from './components/HealthReportView'
-import SchedulerView from './components/SchedulerView'
-import DepGraph from './components/DepGraph'
 import { useTheme } from './components/ThemeProvider'
+
+const DashboardView = lazy(() => import('./components/DashboardView'))
+const AssistantView = lazy(() => import('./components/AssistantView'))
+const UpdatesView = lazy(() => import('./components/UpdatesView'))
+const CleanerView = lazy(() => import('./components/CleanerView'))
+const OptimizerView = lazy(() => import('./components/OptimizerView'))
+const TerminalView = lazy(() => import('./components/TerminalView'))
+const SettingsPage = lazy(() => import('./components/SettingsPage'))
+const ServiceView = lazy(() => import('./components/ServiceView'))
+const ProcessView = lazy(() => import('./components/ProcessView'))
+const NetworkView = lazy(() => import('./components/NetworkView'))
+const BootView = lazy(() => import('./components/BootView'))
+const DiskView = lazy(() => import('./components/DiskView'))
+const AuditView = lazy(() => import('./components/AuditView'))
+const PackagesView = lazy(() => import('./components/PackagesView'))
+const LogView = lazy(() => import('./components/LogView'))
+const ImageView = lazy(() => import('./components/ImageView'))
+const VideoView = lazy(() => import('./components/VideoView'))
+const GalleryView = lazy(() => import('./components/GalleryView'))
+const MemoryView = lazy(() => import('./components/MemoryView'))
+const OllamaModelsView = lazy(() => import('./components/OllamaModelsView'))
+const SnapshotView = lazy(() => import('./components/SnapshotView'))
+const HistoryView = lazy(() => import('./components/HistoryView'))
+const DockerView = lazy(() => import('./components/DockerView'))
+const HomeView = lazy(() => import('./components/HomeView'))
+const AutomationHubView = lazy(() => import('./components/AutomationHubView'))
+const SshView = lazy(() => import('./components/SshView'))
+const FirewallView = lazy(() => import('./components/FirewallView'))
+const VaultView = lazy(() => import('./components/VaultView'))
+const HealthReportView = lazy(() => import('./components/HealthReportView'))
+const SchedulerView = lazy(() => import('./components/SchedulerView'))
+const DepGraph = lazy(() => import('./components/DepGraph'))
 import { navItems } from './lib/navigation'
 import { ALERT_THRESHOLDS_KEY, DEFAULT_THRESHOLDS, type AlertThresholds } from './lib/alerts'
 import { notify } from './lib/notifications'
@@ -53,6 +52,7 @@ interface ActiveViewProps {
   i2vSource?: string | null
   onAskAI?: (tab: string) => void
   stats?: SystemStats | null
+  initialTab?: 'workflows' | 'cron' | 'startup'
 }
 
 interface PackageDepTree {
@@ -82,7 +82,6 @@ const VIEW_MAP: Record<string, React.ComponentType<ActiveViewProps>> = {
   disk: DiskView,
   audit: AuditView,
   logs: LogView,
-  startup: StartupView,
   'image-gen': ImageView,
   'video-gen': VideoView,
   gallery: GalleryView,
@@ -91,8 +90,9 @@ const VIEW_MAP: Record<string, React.ComponentType<ActiveViewProps>> = {
   snapshots: SnapshotView,
   history: HistoryView,
   scheduler: SchedulerView,
-  automations: AutomationsView,
-  cron: CronView,
+  automations: AutomationHubView,
+  cron: AutomationHubView,
+  startup: AutomationHubView,
   ssh: SshView,
   firewall: FirewallView,
   vault: VaultView,
@@ -323,8 +323,14 @@ export default function App() {
     if (activeTab === 'video-gen') specialProps.i2vSource = i2vSource
     if (activeTab === 'terminal') specialProps.onAskAI = setActiveTab
     if (activeTab === 'dashboard' || activeTab === 'docker') specialProps.stats = stats
+    if (activeTab === 'cron') specialProps.initialTab = 'cron'
+    if (activeTab === 'startup') specialProps.initialTab = 'startup'
 
-    return <Component {...(specialProps as ActiveViewProps)} />
+    return (
+      <Suspense fallback={<div style={{ padding: '40px', textAlign: 'center', fontFamily: 'monospace', fontSize: '11px', color: '#52525b' }}>Loading module…</div>}>
+        <Component {...(specialProps as ActiveViewProps)} />
+      </Suspense>
+    )
   }
 
   return (
