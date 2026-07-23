@@ -145,7 +145,7 @@ export default function HealthReportView() {
     setStage('Checking updates…')
     try {
       const upd = await el.systemCheckUpdates()
-      data.updateCount = (upd.repo?.length ?? 0) + (upd.aur?.length ?? 0)
+      data.updateCount = (upd.repo?.length ?? 0) + (upd.aur?.length ?? 0) + (upd.flatpak?.length ?? 0)
     } catch {}
 
     // Show base report immediately — no AI required
