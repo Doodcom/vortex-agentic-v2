@@ -486,8 +486,9 @@ The Updates view checks your system for available package updates.
 
 - **Official Repositories** — uses `checkupdates` (pacman-contrib) to find pending pacman updates without touching the system
 - **User Repositories (AUR)** — uses `paru -Qua` or `yay -Qua` to find outdated AUR packages
+- **Flatpak** — uses `flatpak remote-ls --updates` to find installed Flatpak apps with a newer version on the remote
 
-Both checks run in parallel. Click **Rescan System** to refresh.
+All three checks run in parallel. Click **Rescan System** to refresh.
 
 ### Applying Updates
 
@@ -495,8 +496,9 @@ When updates are available, an **Apply Full System Upgrade** panel appears. Clic
 - Uses `pkexec` for privilege escalation (a polkit password prompt appears)
 - Uses `paru` or `yay` with `--noconfirm` if an AUR helper is installed
 - Falls back to `pacman -Syu` via `pkexec` for repo-only upgrades
+- Runs `flatpak update -y` afterward to bring Flatpak apps up to date too
 
-Live upgrade output streams into a scrollable log terminal below the button.
+Live upgrade output streams into a scrollable log terminal below the button. Flatpak updates can also be applied on their own — see [Flatpak](#flatpak) in the Package Manager section.
 
 ### AI Component Sync
 
@@ -571,6 +573,17 @@ The **AUR** tab shows all currently installed AUR packages with their installed 
 ### Dependency Tree
 
 Click **Explore Dependencies** on any package to open the Dependency Graph view — a visual tree of all package dependencies and what depends on the package.
+
+### Flatpak
+
+The **Flatpaks** tab manages Flatpak apps independently of pacman/AUR.
+
+- **Search Flathub** — type a query and click **Search Flathub** to search the configured Flathub remote
+- **Install / Uninstall** — click the button on any search result or installed app row
+- **Installed Flatpaks** — lists currently installed apps with name, app ID, and description; **Refresh List** re-reads the list
+- **Update All** — appears next to Refresh List only when Flatpak updates are pending; runs `flatpak update -y` for every installed app and refreshes the list and update count afterward
+
+Flatpak updates also run automatically as part of **Upgrade All** on the Updates view (see [System Updates](#10-system-updates)).
 
 ---
 

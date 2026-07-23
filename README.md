@@ -39,8 +39,8 @@ A unified Linux system management and AI creation suite built for CachyOS. All A
 ### System Management
 - Dashboard with live CPU, RAM, GPU, network, storage stats
 - Process manager, systemd service control, network monitor
-- Package manager (pacman + AUR via paru/yay) with dependency graph
-- System updates with streaming upgrade log
+- Package manager (pacman + AUR via paru/yay, plus Flatpak install/search/update) with dependency graph
+- System updates with streaming upgrade log — covers pacman, AUR, and Flatpak in one "Upgrade All"
 - Cleaner, optimiser, disk SMART monitor, boot analyser
 - Docker container management, startup apps manager, log viewer
 - Multi-tab PTY terminal with AI bridge
