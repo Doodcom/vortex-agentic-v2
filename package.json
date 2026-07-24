@@ -3,6 +3,7 @@
   "private": true,
   "version": "1.1.1",
   "description": "Vortex Agentic V2 - Quantum AI & Motion Engine Suite",
+  "license": "custom",
   "author": {
     "name": "doodcom",
     "email": "doodcom@vortex.local"
@@ -53,6 +54,7 @@
       ],
       "icon": "build/icons",
       "category": "Utility",
+      "synopsis": "Vortex Agentic V2 - Quantum AI & Motion Engine Suite",
       "executableArgs": [
         "--ozone-platform-hint=auto",
         "--enable-features=VaapiVideoDecodeLinuxGL,UseOzonePlatform,WaylandWindowDecorations",
