@@ -1,0 +1,5196 @@
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/index.js b/node_modules/@shinyoshiaki/binary-data/src/index.js
+index f566e52..7a14ac9 100644
+--- a/node_modules/@shinyoshiaki/binary-data/src/index.js
++++ b/node_modules/@shinyoshiaki/binary-data/src/index.js
+@@ -1,19 +1,19 @@
+ 'use strict';
+ 
+-const BinaryStream = require('lib/binary-stream');
+-const array = require('types/array');
+-const buffer = require('types/buffer');
+-const bool = require('types/bool');
+-const reserved = require('types/reserved');
+-const string = require('types/string');
+-const numbers = require('types/numbers');
+-const when = require('types/when');
+-const select = require('types/select');
+-const { encode } = require('lib/encode');
+-const { decode } = require('lib/decode');
+-const { encodingLength } = require('lib/encoding-length');
+-const Transaction = require('lib/transaction');
+-const NotEnoughDataError = require('lib/not-enough-data-error');
++const BinaryStream = require('./lib/binary-stream');
++const array = require('./types/array');
++const buffer = require('./types/buffer');
++const bool = require('./types/bool');
++const reserved = require('./types/reserved');
++const string = require('./types/string');
++const numbers = require('./types/numbers');
++const when = require('./types/when');
++const select = require('./types/select');
++const { encode } = require('./lib/encode');
++const { decode } = require('./lib/decode');
++const { encodingLength } = require('./lib/encoding-length');
++const Transaction = require('./lib/transaction');
++const NotEnoughDataError = require('./lib/not-enough-data-error');
+ 
+ const types = {
+   array,
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/internal/buffer-list.js b/node_modules/@shinyoshiaki/binary-data/src/internal/buffer-list.js
+new file mode 100644
+index 0000000..29baf72
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/internal/buffer-list.js
+@@ -0,0 +1,372 @@
++'use strict';
++
++const createFunction = require('generate-function');
++const LinkedList = require('./linked-list');
++
++/**
++ * An optimised partial implementation of Buffer list from `bl`.
++ */
++class BufferList {
++  /**
++   * @class
++   */
++  constructor() {
++    this.queue = new LinkedList();
++    this.offset = 0;
++  }
++
++  /**
++   * The number of bytes in list.
++   * @returns {number}
++   */
++  get length() {
++    return this.queue.length - this.offset;
++  }
++
++  /**
++   * Adds an additional buffer or BufferList to the internal list.
++   * @param {Buffer|Buffer[]|BufferList|BufferList[]} buf
++   */
++  append(buf) {
++    if (Buffer.isBuffer(buf)) {
++      if (this.offset > 0) {
++        const head = this.queue.shift();
++        this.queue.unshift(head.slice(this.offset));
++
++        this.offset = 0;
++      }
++
++      this.queue.push(buf);
++    } else if (Array.isArray(buf)) {
++      for (let i = 0; i < buf.length; i += 1) {
++        this.append(buf[i]);
++      }
++    } else if (buf instanceof BufferList) {
++      if (this.offset > 0) {
++        const head = this.queue.shift();
++        this.queue.unshift(head.slice(this.offset));
++
++        this.offset = 0;
++      }
++
++      if (buf.offset > 0) {
++        const head = buf.queue.shift();
++        buf.queue.unshift(head.slice(buf.offset));
++
++        buf.offset = 0;
++      }
++
++      let leaf = buf.queue.head;
++
++      while (leaf) {
++        this.queue.push(leaf.buffer);
++        leaf = leaf.next;
++      }
++    }
++  }
++
++  /* eslint-disable consistent-return */
++  /**
++   * Return the byte at the specified index.
++   * @param {number} index Index of the byte in the Buffer list.
++   * @returns {number}
++   */
++  get(index) {
++    let i = index;
++
++    while (i >= this.length) {
++      i -= this.length;
++    }
++
++    while (i < 0) {
++      i += this.length;
++    }
++
++    let leaf = this.queue.head;
++    let { offset } = this;
++
++    while (leaf) {
++      if (leaf.buffer.length - offset > i) {
++        return leaf.buffer[i + offset];
++      }
++
++      i -= leaf.buffer.length - offset;
++      offset = 0;
++      leaf = leaf.next;
++    }
++  }
++  /* eslint-enable consistent-return */
++
++  /**
++   * Returns a new Buffer object containing the bytes within the range specified.
++   * @param {number} start
++   * @param {number} end
++   * @returns {Buffer}
++   */
++  slice(start, end) {
++    /* eslint-disable no-param-reassign */
++    if (typeof start !== 'number') {
++      start = 0;
++    }
++
++    if (typeof end !== 'number') {
++      end = this.length;
++    }
++
++    while (start < 0) {
++      start += this.length;
++    }
++
++    while (end < 0) {
++      end += this.length;
++    }
++
++    end = Math.min(end, this.length);
++
++    if (start >= this.length || end === 0) {
++      return Buffer.alloc(0);
++    }
++
++    const tmpStart = start;
++    start = Math.min(tmpStart, end);
++    end = Math.max(tmpStart, end);
++
++    const subset = this.queue.slice(start + this.offset, end + this.offset);
++
++    // Buffer.concat() doesn't have optimization for count == 1
++    if (subset.count === 1) {
++      return subset.first;
++    }
++
++    let leaf = subset.head;
++    const target = Buffer.allocUnsafe(subset.length);
++    let offset = 0;
++
++    for (let i = 0; i < subset.count; i += 1) {
++      target.set(leaf.buffer, offset);
++      offset += leaf.buffer.length;
++      leaf = leaf.next;
++    }
++
++    return target;
++    /* eslint-enable no-param-reassign */
++  }
++
++  /**
++   * Return a string representation of the buffer.
++   * @param {string} encoding
++   * @param {number} start
++   * @param {number} end
++   * @returns {string}
++   */
++  toString(encoding, start, end) {
++    return this.slice(start, end).toString(encoding);
++  }
++
++  /**
++   * Shift bytes off the start of the list.
++   * @param {number} bytes
++   */
++  consume(bytes) {
++    let remainder = bytes;
++
++    while (this.length > 0) {
++      const firstLength = this.queue.first.length - this.offset;
++
++      if (remainder >= firstLength) {
++        this.queue.shift();
++
++        remainder -= firstLength;
++        this.offset = 0;
++      } else {
++        this.offset += remainder;
++        break;
++      }
++    }
++  }
++
++  /**
++   * Returns the first (least) index of an element
++   * within the list equal to the specified value,
++   * or -1 if none is found.
++   * @param {number} byte
++   * @param {number} [offset]
++   * @returns {number}
++   */
++  indexOf(byte, offset = 0) {
++    /* eslint-disable no-param-reassign */
++    if (!Number.isInteger(byte)) {
++      throw new TypeError('Invalid argument 1');
++    }
++
++    if (byte < 0 || byte > 0xff) {
++      throw new Error('Invalid argument 1');
++    }
++
++    if (!Number.isInteger(offset)) {
++      offset = 0;
++    }
++
++    while (offset >= this.length) {
++      offset -= this.length;
++    }
++
++    while (offset < 0) {
++      offset += this.length;
++    }
++
++    let leaf = this.queue.head;
++    let bias = 0;
++
++    const next = () => {
++      bias += leaf.buffer.length;
++      leaf = leaf.next;
++    };
++
++    while (leaf) {
++      let byteOffset = 0;
++
++      if (leaf === this.queue.head) {
++        byteOffset += this.offset;
++      }
++
++      // `offset` is point to next chunk
++      if (offset >= leaf.buffer.length - byteOffset) {
++        offset -= leaf.buffer.length - byteOffset;
++        next();
++        continue; // eslint-disable-line no-continue
++      }
++
++      // `offset` is point to current chunk
++      if (offset < leaf.buffer.length) {
++        byteOffset += offset;
++      }
++
++      const index = leaf.buffer.indexOf(byte, byteOffset);
++
++      if (index > -1) {
++        return index + bias - this.offset;
++      }
++
++      next();
++
++      if (byteOffset > this.offset) {
++        offset = 0;
++      }
++    }
++
++    return -1;
++    /* eslint-enable no-param-reassign */
++  }
++}
++
++const fixedReadMethods = {
++  readDoubleBE: 8,
++  readDoubleLE: 8,
++  readFloatBE: 4,
++  readFloatLE: 4,
++  readInt32BE: 4,
++  readInt32LE: 4,
++  readUInt32BE: 4,
++  readUInt32LE: 4,
++  readInt16BE: 2,
++  readInt16LE: 2,
++  readUInt16BE: 2,
++  readUInt16LE: 2,
++  readInt8: 1,
++  readUInt8: 1,
++};
++
++Object.keys(fixedReadMethods).forEach(method => {
++  const gen = createFunction();
++
++  gen(`
++    function bufferlist_${method}(offset = 0) {
++      const start = offset + this.offset;
++      const head = this.queue.first;
++      const size = ${gen.formats.d(fixedReadMethods[method])};
++      const isFirtsChunkEnough = head.length - start >= size;
++
++      return isFirtsChunkEnough
++        ? head.${method}(start)
++        : this.slice(offset, offset + size).${method}(0)
++    }
++  `);
++
++  BufferList.prototype[method] = gen.toFunction();
++});
++
++const metaReadMethods = ['readIntBE', 'readIntLE', 'readUIntBE', 'readUIntLE'];
++
++metaReadMethods.forEach(method => {
++  const gen = createFunction();
++
++  gen(`
++    function bufferlist_${method}(size, offset = 0) {
++      const start = offset + this.offset;
++      const head = this.queue.first;
++      const isFirtsChunkEnough = head.length - start >= size;
++
++      return isFirtsChunkEnough
++        ? head.${method}(start, size)
++        : this.slice(offset, offset + size).${method}(0, size)
++    }
++  `);
++
++  BufferList.prototype[method] = gen.toFunction();
++});
++
++const fixedWriteMethods = {
++  writeDoubleBE: 8,
++  writeDoubleLE: 8,
++  writeFloatBE: 4,
++  writeFloatLE: 4,
++  writeInt32BE: 4,
++  writeInt32LE: 4,
++  writeUInt32BE: 4,
++  writeUInt32LE: 4,
++  writeInt16BE: 2,
++  writeInt16LE: 2,
++  writeUInt16BE: 2,
++  writeUInt16LE: 2,
++  writeInt8: 1,
++  writeUInt8: 1,
++};
++
++Object.keys(fixedWriteMethods).forEach(method => {
++  const gen = createFunction();
++
++  gen(`
++    function bufferlist_${method}(value) {
++      const size = ${gen.formats.d(fixedWriteMethods[method])};
++      const buf = Buffer.allocUnsafe(size);
++      buf.${method}(value, 0);
++      this.append(buf);
++    }
++  `);
++
++  BufferList.prototype[method] = gen.toFunction();
++});
++
++const metaWriteMethods = [
++  'writeIntBE',
++  'writeIntLE',
++  'writeUIntBE',
++  'writeUIntLE',
++];
++
++metaWriteMethods.forEach(method => {
++  const gen = createFunction();
++
++  gen(`
++    function bufferlist_${method}(value, size) {
++      const buf = Buffer.allocUnsafe(size);
++      buf.${method}(value, 0, size);
++      this.append(buf);
++    }
++  `);
++
++  BufferList.prototype[method] = gen.toFunction();
++});
++
++module.exports = BufferList;
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/internal/linked-list.js b/node_modules/@shinyoshiaki/binary-data/src/internal/linked-list.js
+new file mode 100644
+index 0000000..fab8915
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/internal/linked-list.js
+@@ -0,0 +1,200 @@
++'use strict';
++
++/**
++ * A Leaf in a linked list.
++ */
++class Chunk {
++  /**
++   * @class Chunk
++   */
++  constructor() {
++    /** @type {Chunk} */
++    this.next = null;
++    /** @type {Buffer} */
++    this.buffer = null;
++  }
++}
++
++/**
++ * Linked list for buffers.
++ */
++module.exports = class LinkedList {
++  /**
++   * @class LinkedList
++   */
++  constructor() {
++    /** @type {Chunk} */
++    this.head = null;
++    /** @type {Chunk} */
++    this.tail = null;
++
++    this.length = 0;
++    this.count = 0;
++  }
++
++  /**
++   * Add a buffer to the end of the list.
++   * @param {Buffer} buf
++   */
++  push(buf) {
++    const entry = new Chunk();
++    entry.buffer = buf;
++
++    if (this.length > 0) {
++      this.tail.next = entry;
++    } else {
++      this.head = entry;
++    }
++
++    this.tail = entry;
++    this.length += buf.length;
++    this.count += 1;
++  }
++
++  /**
++   * Add a buffer to the start of the list.
++   * @param {Buffer} buf
++   */
++  unshift(buf) {
++    const entry = new Chunk();
++    entry.buffer = buf;
++    entry.next = this.head;
++
++    if (this.isEmpty()) {
++      this.tail = entry;
++    }
++
++    this.head = entry;
++    this.length += buf.length;
++    this.count += 1;
++  }
++
++  /**
++   * Remove and return first element's buffer.
++   * @returns {Buffer|null}
++   */
++  shift() {
++    if (this.isEmpty()) {
++      return null;
++    }
++
++    const ret = this.head.buffer;
++
++    if (this.head === this.tail) {
++      this.head = null;
++      this.tail = null;
++    } else {
++      this.head = this.head.next;
++    }
++
++    this.length -= ret.length;
++    this.length = Math.max(this.length, 0);
++    this.count -= 1;
++
++    return ret;
++  }
++
++  /**
++   * Get buffer of first element or null.
++   * @returns {Buffer|null}
++   */
++  get first() {
++    if (this.isEmpty()) {
++      return null;
++    }
++
++    return this.head.buffer;
++  }
++
++  /**
++   * Get buffer of last element or null.
++   * @returns {Buffer|null}
++   */
++  get last() {
++    if (this.isEmpty()) {
++      return null;
++    }
++
++    return this.tail.buffer;
++  }
++
++  /**
++   * Check if a list is empty.
++   * @returns {bool}
++   */
++  isEmpty() {
++    return this.length === 0;
++  }
++
++  /**
++   * Remove all elements from a list.
++   */
++  clear() {
++    this.head = null;
++    this.tail = null;
++    this.length = 0;
++    this.count = 0;
++  }
++
++  /**
++   * Return a subset of linked list.
++   * @param {number} start Offset bytes from start.
++   * @param {number} end Bytes count.
++   * @returns {LinkedList}
++   */
++  slice(start, end) {
++    if (start < 0 || start >= this.length) {
++      return new LinkedList();
++    }
++
++    if (end < 0 || end > this.length || end < start) {
++      return new LinkedList();
++    }
++
++    const list = new LinkedList();
++
++    let leaf = this.head;
++    let offsetStart = start;
++    let offsetEnd = end;
++
++    // Find head of slice.
++    while (leaf) {
++      if (leaf.buffer.length > offsetStart) {
++        if (offsetStart === 0 && leaf.buffer.length <= offsetEnd) {
++          list.push(leaf.buffer);
++        } else if (leaf.buffer.length >= offsetEnd) {
++          list.push(leaf.buffer.slice(offsetStart, offsetEnd));
++        } else {
++          list.push(leaf.buffer.slice(offsetStart));
++        }
++
++        break;
++      }
++
++      offsetStart -= leaf.buffer.length;
++      offsetEnd -= leaf.buffer.length;
++      leaf = leaf.next;
++    }
++
++    // Find tail of slice
++    if (leaf.buffer.length < offsetEnd) {
++      while (leaf) {
++        if (leaf.buffer.length === offsetEnd) {
++          list.push(leaf.buffer);
++          break;
++        } else if (leaf.buffer.length > offsetEnd) {
++          list.push(leaf.buffer.slice(0, offsetEnd));
++          break;
++        } else if (offsetStart < 0 && leaf.buffer.length < offsetEnd) {
++          list.push(leaf.buffer);
++        }
++
++        offsetStart -= leaf.buffer.length;
++        offsetEnd -= leaf.buffer.length;
++        leaf = leaf.next;
++      }
++    }
++
++    return list;
++  }
++};
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/internal/meta.js b/node_modules/@shinyoshiaki/binary-data/src/internal/meta.js
+new file mode 100644
+index 0000000..da87c32
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/internal/meta.js
+@@ -0,0 +1,57 @@
++'use strict';
++
++const symbols = require('./symbols');
++
++/**
++ * Store extended info between encode/decode calls.
++ */
++module.exports = class Metadata {
++  /**
++   * @class Metadata
++   */
++  constructor() {
++    // The number of bytes are processed.
++    this[symbols.bytes] = 0;
++
++    // Root node.
++    this.node = undefined;
++
++    // Current node.
++    this.current = undefined;
++  }
++
++  /**
++   * The number of bytes are processed.
++   * @returns {number}
++   */
++  get bytes() {
++    return this[symbols.bytes];
++  }
++
++  /**
++   * Clone provided metadata.
++   * @param {Metadata} metadata
++   * @returns {Metadata}
++   */
++  static clone(metadata) {
++    const meta = new Metadata();
++
++    if (metadata instanceof Metadata) {
++      meta.node = metadata.node;
++      meta.current = metadata.current;
++    }
++
++    return meta;
++  }
++
++  /**
++   * Remove internal references to processed nodes.
++   * @param {Metadata} metadata
++   */
++  static clean(metadata) {
++    if (metadata instanceof Metadata) {
++      metadata.node = undefined;
++      metadata.current = undefined;
++    }
++  }
++};
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/internal/symbols.js b/node_modules/@shinyoshiaki/binary-data/src/internal/symbols.js
+new file mode 100644
+index 0000000..6aae3dc
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/internal/symbols.js
+@@ -0,0 +1,12 @@
++'use strict';
++
++// Helps to "skip" field in result.
++const skip = Symbol('skip');
++
++// Private field `bytes` in Metadata.
++const bytes = Symbol('bytes');
++
++module.exports = {
++  skip,
++  bytes,
++};
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/lib/__mocks__/binary-stream.js b/node_modules/@shinyoshiaki/binary-data/src/lib/__mocks__/binary-stream.js
+new file mode 100644
+index 0000000..b426897
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/lib/__mocks__/binary-stream.js
+@@ -0,0 +1,8 @@
++'use strict';
++
++module.exports = class BinaryStream {
++  /**
++   * @private
++   */
++  append() {} // eslint-disable-line class-methods-use-this
++};
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/lib/binary-stream.js b/node_modules/@shinyoshiaki/binary-data/src/lib/binary-stream.js
+new file mode 100644
+index 0000000..7ae3cfd
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/lib/binary-stream.js
+@@ -0,0 +1,227 @@
++'use strict';
++
++const { Transform } = require('stream');
++const createFunction = require('generate-function');
++const BufferList = require('../internal/buffer-list');
++const NotEnoughDataError = require('./not-enough-data-error');
++
++const kbuffer = Symbol('buffer');
++
++/**
++ * Binary data queue.
++ * Also represent a part of BufferList API.
++ */
++class BinaryStream extends Transform {
++  /**
++   * @class Binary
++   * @param {Object} options
++   */
++  constructor(options = {}) {
++    super(options);
++
++    this[kbuffer] = new BufferList();
++  }
++
++  /**
++   * @returns {BufferList}
++   */
++  get buffer() {
++    return this[kbuffer];
++  }
++
++  /**
++   * @returns {number}
++   */
++  get length() {
++    return this.buffer.length;
++  }
++
++  /**
++   * @param {Buffer} buf
++   */
++  append(buf) {
++    this.buffer.append(buf);
++  }
++
++  /**
++   * @param {number} i
++   * @returns {number}
++   */
++  get(i) {
++    return this.buffer.get(i);
++  }
++
++  /**
++   * @param {number} [start]
++   * @param {number} [end]
++   * @returns {Buffer}
++   */
++  slice(start, end) {
++    return this.buffer.slice(start, end);
++  }
++
++  /**
++   * @param {number} bytes
++   */
++  consume(bytes) {
++    this.buffer.consume(bytes);
++  }
++
++  /**
++   * @param {string} encoding
++   * @param {number} [start]
++   * @param {number} [end]
++   * @returns {string}
++   */
++  toString(encoding, start, end) {
++    return this.buffer.toString(encoding, start, end);
++  }
++
++  /**
++   * Returns the first (least) index of an element
++   * within the list equal to the specified value,
++   * or -1 if none is found.
++   * @param {number} byte
++   * @param {number} [offset]
++   * @returns {number}
++   */
++  indexOf(byte, offset = 0) {
++    return this.buffer.indexOf(byte, offset);
++  }
++
++  /**
++   * Read provided amount of bytes from stream.
++   * @param {number} size
++   * @returns {Buffer}
++   */
++  readBuffer(size) {
++    assertSize(size, this.length);
++
++    const buf = this.slice(0, size);
++    this.consume(size);
++
++    return buf;
++  }
++
++  /**
++   * Write provided chunk to the stream.
++   * @param {Buffer} chunk
++   */
++  writeBuffer(chunk) {
++    this.append(chunk);
++  }
++}
++
++const fixedReadMethods = {
++  readDoubleBE: 8,
++  readDoubleLE: 8,
++  readFloatBE: 4,
++  readFloatLE: 4,
++  readInt32BE: 4,
++  readInt32LE: 4,
++  readUInt32BE: 4,
++  readUInt32LE: 4,
++  readInt16BE: 2,
++  readInt16LE: 2,
++  readUInt16BE: 2,
++  readUInt16LE: 2,
++  readInt8: 1,
++  readUInt8: 1,
++};
++
++const metaReadMethods = ['readIntBE', 'readIntLE', 'readUIntBE', 'readUIntLE'];
++
++Object.keys(fixedReadMethods).forEach(method => {
++  const gen = createFunction();
++
++  gen(`
++    function binary_${method}() {
++      const bytes = ${gen.formats.d(fixedReadMethods[method])};
++      assertSize(bytes, this.length);
++
++      const res = this.buffer.${method}(0);
++      this.consume(bytes);
++
++      return res;
++    }
++  `);
++
++  BinaryStream.prototype[method] = gen.toFunction({ assertSize });
++});
++
++metaReadMethods.forEach(method => {
++  const gen = createFunction();
++
++  gen(`
++    function binary_${method}(size) {
++      assertSize(size, this.length);
++
++      const res = this.buffer.${method}(size, 0);
++      this.consume(size);
++      return res;
++    }
++  `);
++
++  BinaryStream.prototype[method] = gen.toFunction({ assertSize });
++});
++
++const fixedWriteMethods = [
++  'writeDoubleBE',
++  'writeDoubleLE',
++  'writeFloatBE',
++  'writeFloatLE',
++  'writeInt32BE',
++  'writeInt32LE',
++  'writeUInt32BE',
++  'writeUInt32LE',
++  'writeInt16BE',
++  'writeInt16LE',
++  'writeUInt16BE',
++  'writeUInt16LE',
++  'writeInt8',
++  'writeUInt8',
++];
++
++fixedWriteMethods.forEach(method => {
++  const gen = createFunction();
++
++  gen(`
++    function binary_${method}(value) {
++      this.buffer.${method}(value);
++    }
++  `);
++
++  BinaryStream.prototype[method] = gen.toFunction();
++});
++
++const metaWriteMethods = [
++  'writeIntBE',
++  'writeIntLE',
++  'writeUIntBE',
++  'writeUIntLE',
++];
++
++metaWriteMethods.forEach(method => {
++  const gen = createFunction();
++
++  gen(`
++    function binary_${method}(value, size) {
++      this.buffer.${method}(value, size);
++    }
++  `);
++
++  BinaryStream.prototype[method] = gen.toFunction();
++});
++
++/**
++ * Check if stream is able to read requested amound of data.
++ * @param {number} size Requested data size to read.
++ * @param {number} length The number of bytes in stream.
++ */
++function assertSize(size, length) {
++  if (size > length) {
++    throw new NotEnoughDataError(size, length);
++  }
++}
++
++module.exports = BinaryStream;
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/lib/decode.js b/node_modules/@shinyoshiaki/binary-data/src/lib/decode.js
+new file mode 100644
+index 0000000..5d40cfe
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/lib/decode.js
+@@ -0,0 +1,106 @@
++'use strict';
++
++const { isType, isUserType, isDecodeType } = require('./util');
++const BinaryStream = require('./binary-stream');
++const symbols = require('../internal/symbols');
++const Metadata = require('../internal/meta');
++
++module.exports = {
++  decode,
++  decodeCommon,
++};
++
++/**
++ * Decode any data from provided stream using schema.
++ * @param {BinaryStream} rstream Read stream to decode.
++ * @param {Object} typeOrSchema Builtin data type or schema.
++ * @returns {*}
++ */
++function decode(rstream, typeOrSchema) {
++  let decodeStream = rstream;
++
++  if (Buffer.isBuffer(rstream)) {
++    decodeStream = new BinaryStream();
++    decodeStream.append(rstream);
++  }
++
++  const meta = new Metadata();
++  const value = decodeCommon(decodeStream, typeOrSchema, meta);
++
++  decode.bytes = meta.bytes;
++  Metadata.clean(meta);
++
++  return value;
++}
++
++/**
++ * @private
++ * @param {BinaryStream|Buffer} rstream
++ * @param {Object} typeOrSchema
++ * @param {Metadata} meta
++ * @returns {*}
++ */
++function decodeCommon(rstream, typeOrSchema, meta) {
++  if (isType(typeOrSchema)) {
++    const value = typeOrSchema.decode.call(meta, rstream);
++    meta[symbols.bytes] += typeOrSchema.decode.bytes;
++    return value;
++  }
++
++  return decodeSchema(rstream, typeOrSchema, meta);
++}
++
++/**
++ * @private
++ * @param {BinaryStream} rstream
++ * @param {Object} schema
++ * @param {Metadata} meta
++ * @returns {Object}
++ */
++function decodeSchema(rstream, schema, meta) {
++  assertSchema(schema);
++
++  const node = Object.create(null);
++
++  if (meta.node === undefined) {
++    meta.node = node;
++    meta.current = node;
++  } else {
++    meta.current = node;
++  }
++
++  const keys = Object.keys(schema);
++
++  for (let i = 0; i < keys.length; i += 1) {
++    const key = keys[i];
++    const type = schema[key];
++
++    if (!isDecodeType(type)) {
++      node[key] = decodeSchema(rstream, type, meta);
++      meta.current = node;
++      continue; // eslint-disable-line no-continue
++    }
++
++    const value = type.decode.call(meta, rstream);
++    meta[symbols.bytes] += type.decode.bytes;
++
++    if (type[symbols.skip] === true) {
++      continue; // eslint-disable-line no-continue
++    }
++
++    node[key] = value;
++  }
++
++  return node;
++}
++
++/**
++ * Check if argument is schema.
++ * @param {Object} schema
++ * @private
++ */
++function assertSchema(schema) {
++  if (!isUserType(schema)) {
++    throw new TypeError('Argument #2 should be a plain object.');
++  }
++}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/lib/encode.js b/node_modules/@shinyoshiaki/binary-data/src/lib/encode.js
+new file mode 100644
+index 0000000..f6518c9
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/lib/encode.js
+@@ -0,0 +1,100 @@
++'use strict';
++
++const { isUserType, isEncodeType, isType } = require('./util');
++const symbols = require('../internal/symbols');
++const Metadata = require('../internal/meta');
++const BinaryStream = require('./binary-stream');
++
++module.exports = {
++  encode,
++  encodeCommon,
++};
++
++/**
++ * @param {any} obj
++ * @param {any} type
++ * @param {BinaryStream} [target]
++ * @returns {BinaryStream}
++ */
++function encode(obj, type, target) {
++  const meta = new Metadata();
++
++  // Check for legacy interface.
++  if (type instanceof BinaryStream) {
++    const tmp = target;
++    target = type; // eslint-disable-line no-param-reassign
++    type = tmp; // eslint-disable-line no-param-reassign
++  }
++
++  if (!(target instanceof BinaryStream)) {
++    target = new BinaryStream(); // eslint-disable-line no-param-reassign
++  }
++
++  encodeCommon(obj, target, type, meta);
++
++  encode.bytes = meta.bytes;
++  Metadata.clean(meta);
++
++  return target;
++}
++
++/**
++ * @param {any} object
++ * @param {EncodeStream} wstream
++ * @param {any} typeOrSchema
++ * @param {Metadata} context
++ */
++function encodeCommon(object, wstream, typeOrSchema, context) {
++  if (isType(typeOrSchema)) {
++    typeOrSchema.encode.call(context, object, wstream);
++    context[symbols.bytes] += typeOrSchema.encode.bytes;
++  } else {
++    encodeSchema(object, wstream, typeOrSchema, context);
++  }
++}
++
++/**
++ * @param {any} object
++ * @param {EncodeStream} wstream
++ * @param {any} schema
++ * @param {Metadata} context
++ */
++function encodeSchema(object, wstream, schema, context) {
++  assertSchema(schema);
++
++  if (context.node === undefined) {
++    context.node = object;
++    context.current = object;
++  } else {
++    context.current = object;
++  }
++
++  const keys = Object.keys(schema);
++
++  for (let i = 0; i < keys.length; i += 1) {
++    const key = keys[i];
++    const type = schema[key];
++    const value = object[key];
++
++    if (!isEncodeType(type)) {
++      encodeSchema(value, wstream, type, context);
++      context.current = object;
++
++      continue; // eslint-disable-line no-continue
++    }
++
++    type.encode.call(context, value, wstream);
++    context[symbols.bytes] += type.encode.bytes;
++  }
++}
++
++/**
++ * Check if argument is schema.
++ * @param {Object} schema
++ * @private
++ */
++function assertSchema(schema) {
++  if (!isUserType(schema)) {
++    throw new TypeError('Argument `schema` should be a plain object.');
++  }
++}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/lib/encoding-length.js b/node_modules/@shinyoshiaki/binary-data/src/lib/encoding-length.js
+new file mode 100644
+index 0000000..7e3f4eb
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/lib/encoding-length.js
+@@ -0,0 +1,72 @@
++'use strict';
++
++const { isUserType, isType } = require('./util');
++const Metadata = require('../internal/meta');
++const symbols = require('../internal/symbols');
++
++module.exports = {
++  encodingLength,
++  encodingLengthCommon,
++};
++
++/**
++ * Get the number of bytes to encode `obj` using `schema`.
++ * @param {*} obj Any valid js object.
++ * @param {Object} schema
++ * @returns {number}
++ */
++function encodingLength(obj, schema) {
++  const context = new Metadata();
++
++  encodingLengthCommon(obj, schema, context);
++  Metadata.clean(context);
++
++  return context.bytes;
++}
++
++/**
++ * @param {any} item
++ * @param {Object} typeOrSchema
++ * @param {Metadata} context
++ */
++function encodingLengthCommon(item, typeOrSchema, context) {
++  if (isType(typeOrSchema)) {
++    context[symbols.bytes] += typeOrSchema.encodingLength.call(context, item);
++  } else {
++    encodingLengthSchema(item, typeOrSchema, context);
++  }
++}
++
++/**
++ * @param {any} item
++ * @param {Object} schema
++ * @param {Metadata} context
++ */
++function encodingLengthSchema(item, schema, context) {
++  if (!isUserType(schema)) {
++    throw new TypeError('Argument `schema` should be a plain object.');
++  }
++
++  if (context.node === undefined) {
++    context.node = item;
++    context.current = item;
++  } else {
++    context.current = item;
++  }
++
++  const keys = Object.keys(schema);
++
++  for (let i = 0; i < keys.length; i += 1) {
++    const key = keys[i];
++    const type = schema[key];
++    const value = item[key];
++
++    if (!isType(type)) {
++      encodingLengthSchema(value, type, context);
++      context.current = item;
++      continue; // eslint-disable-line no-continue
++    }
++
++    context[symbols.bytes] += type.encodingLength.call(context, value);
++  }
++}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/lib/not-enough-data-error.js b/node_modules/@shinyoshiaki/binary-data/src/lib/not-enough-data-error.js
+new file mode 100644
+index 0000000..f52fbaf
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/lib/not-enough-data-error.js
+@@ -0,0 +1,18 @@
++'use strict';
++
++/**
++ * Represent an unexpected end of decode stream.
++ */
++module.exports = class NotEnoughDataError extends Error {
++  /**
++   * @class NotEnoughDataError
++   * @param {number} expected The number of expected bytes.
++   * @param {number} received The number of received bytes.
++   */
++  constructor(expected, received) {
++    const message = `requested ${expected} bytes but only ${received} available`;
++
++    super(message);
++    this.name = 'NotEnoughDataError';
++  }
++};
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/lib/transaction.js b/node_modules/@shinyoshiaki/binary-data/src/lib/transaction.js
+new file mode 100644
+index 0000000..5c34d4a
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/lib/transaction.js
+@@ -0,0 +1,152 @@
++'use strict';
++
++const createFunction = require('generate-function');
++const NotEnoughDataError = require('./not-enough-data-error');
++
++/**
++ * Helps to read the whole data chunk.
++ */
++class Transaction {
++  /**
++   * @class Transaction
++   * @param {DecodeStream} stream
++   */
++  constructor(stream) {
++    this.stream = stream;
++    this.index = 0;
++  }
++
++  /**
++   * @param {Buffer} buf
++   */
++  append(buf) {
++    this.stream.append(buf);
++  }
++
++  /**
++   * Confirm reading and removes data from stream.
++   */
++  commit() {
++    this.stream.consume(this.index);
++  }
++
++  /**
++   * Get byte from stream by index.
++   * @param {number} i
++   * @returns {number}
++   */
++  get(i = 0) {
++    return this.stream.get(this.index + i);
++  }
++
++  /**
++   * Get the number of bytes in stream.
++   * @returns {number}
++   */
++  get length() {
++    return this.stream.length;
++  }
++
++  /**
++   * @param {number} [start]
++   * @param {number} [end]
++   * @returns {Buffer}
++   */
++  slice(start, end) {
++    return this.stream.slice(start, end);
++  }
++
++  /**
++   * @param {string} encoding
++   * @param {number} [start]
++   * @param {number} [end]
++   * @returns {string}
++   */
++  toString(encoding, start, end) {
++    return this.stream.toString(encoding, start, end);
++  }
++
++  /**
++   * Read provided amount of bytes from stream.
++   * @param {number} size
++   * @returns {Buffer}
++   */
++  readBuffer(size) {
++    assertSize(this.index + size, this.length);
++
++    const buf = this.stream.slice(this.index, this.index + size);
++    this.index += size;
++
++    return buf;
++  }
++
++  /**
++   * @param {number} byte
++   * @param {number} [offset]
++   * @returns {number}
++   */
++  indexOf(byte, offset = 0) {
++    return this.stream.indexOf(byte, this.index + offset) - this.index;
++  }
++}
++
++const methods = {
++  readDoubleBE: 8,
++  readDoubleLE: 8,
++  readFloatBE: 4,
++  readFloatLE: 4,
++  readInt32BE: 4,
++  readInt32LE: 4,
++  readUInt32BE: 4,
++  readUInt32LE: 4,
++  readInt16BE: 2,
++  readInt16LE: 2,
++  readUInt16BE: 2,
++  readUInt16LE: 2,
++  readInt8: 1,
++  readUInt8: 1,
++};
++
++Object.keys(methods).forEach(method => {
++  const gen = createFunction();
++  const bytes = methods[method];
++
++  gen(`
++    function transaction_${method}() {
++      assertSize(this.index + ${gen.formats.d(bytes)}, this.length);
++      const value = this.stream.buffer.${method}(this.index);
++      this.index += ${gen.formats.d(bytes)};
++      return value;
++    }
++  `);
++
++  Transaction.prototype[method] = gen.toFunction({ assertSize });
++});
++
++['readIntBE', 'readIntLE', 'readUIntBE', 'readUIntLE'].forEach(method => {
++  const gen = createFunction();
++
++  gen(`
++    function transaction_${method}(bytes) {
++      assertSize(this.index + bytes, this.length);
++      const value = this.stream.buffer.${method}(bytes, this.index);
++      this.index += bytes;
++      return value;
++    }
++  `);
++
++  Transaction.prototype[method] = gen.toFunction({ assertSize });
++});
++
++module.exports = Transaction;
++
++/**
++ * Check if stream is able to read requested amound of data.
++ * @param {number} size Requested data size to read.
++ * @param {number} length The number of bytes in stream.
++ */
++function assertSize(size, length) {
++  if (size > length) {
++    throw new NotEnoughDataError(size, length);
++  }
++}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/lib/util.js b/node_modules/@shinyoshiaki/binary-data/src/lib/util.js
+new file mode 100644
+index 0000000..58ccd44
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/lib/util.js
+@@ -0,0 +1,56 @@
++'use strict';
++
++const isPlainObject = require('is-plain-object');
++
++module.exports = {
++  isType,
++  isUserType: isPlainObject,
++  isFunction,
++  isDecodeType,
++  isEncodeType,
++};
++
++/**
++ * Check if argument is data type.
++ * @param {*} type
++ * @returns {bool}
++ */
++function isType(type) {
++  return isObject(type) && isFunction(type.encode) && isFunction(type.decode);
++}
++
++/**
++ * Check if argument is function.
++ * @param {*} value
++ * @returns {bool}
++ */
++function isFunction(value) {
++  return typeof value === 'function';
++}
++
++/**
++ * Check if argument is object.
++ * @param {*} value
++ * @returns {bool}
++ */
++function isObject(value) {
++  return typeof value === 'object' && value !== null;
++}
++
++/**
++ * Check if argument is data type and able to decode data.
++ * @param {*} type
++ * @returns {bool}
++ */
++function isDecodeType(type) {
++  return isObject(type) && isFunction(type.decode);
++}
++
++/**
++ * Check if argument is data type and able to encode data.
++ * @param {*} type
++ * @returns {bool}
++ */
++function isEncodeType(type) {
++  return isObject(type) && isFunction(type.encode);
++}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/internal/buffer-list.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/internal/buffer-list.js
+deleted file mode 100644
+index 729b40e..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/internal/buffer-list.js
++++ /dev/null
+@@ -1,372 +0,0 @@
+-'use strict';
+-
+-const createFunction = require('generate-function');
+-const LinkedList = require('internal/linked-list');
+-
+-/**
+- * An optimised partial implementation of Buffer list from `bl`.
+- */
+-class BufferList {
+-  /**
+-   * @class
+-   */
+-  constructor() {
+-    this.queue = new LinkedList();
+-    this.offset = 0;
+-  }
+-
+-  /**
+-   * The number of bytes in list.
+-   * @returns {number}
+-   */
+-  get length() {
+-    return this.queue.length - this.offset;
+-  }
+-
+-  /**
+-   * Adds an additional buffer or BufferList to the internal list.
+-   * @param {Buffer|Buffer[]|BufferList|BufferList[]} buf
+-   */
+-  append(buf) {
+-    if (Buffer.isBuffer(buf)) {
+-      if (this.offset > 0) {
+-        const head = this.queue.shift();
+-        this.queue.unshift(head.slice(this.offset));
+-
+-        this.offset = 0;
+-      }
+-
+-      this.queue.push(buf);
+-    } else if (Array.isArray(buf)) {
+-      for (let i = 0; i < buf.length; i += 1) {
+-        this.append(buf[i]);
+-      }
+-    } else if (buf instanceof BufferList) {
+-      if (this.offset > 0) {
+-        const head = this.queue.shift();
+-        this.queue.unshift(head.slice(this.offset));
+-
+-        this.offset = 0;
+-      }
+-
+-      if (buf.offset > 0) {
+-        const head = buf.queue.shift();
+-        buf.queue.unshift(head.slice(buf.offset));
+-
+-        buf.offset = 0;
+-      }
+-
+-      let leaf = buf.queue.head;
+-
+-      while (leaf) {
+-        this.queue.push(leaf.buffer);
+-        leaf = leaf.next;
+-      }
+-    }
+-  }
+-
+-  /* eslint-disable consistent-return */
+-  /**
+-   * Return the byte at the specified index.
+-   * @param {number} index Index of the byte in the Buffer list.
+-   * @returns {number}
+-   */
+-  get(index) {
+-    let i = index;
+-
+-    while (i >= this.length) {
+-      i -= this.length;
+-    }
+-
+-    while (i < 0) {
+-      i += this.length;
+-    }
+-
+-    let leaf = this.queue.head;
+-    let { offset } = this;
+-
+-    while (leaf) {
+-      if (leaf.buffer.length - offset > i) {
+-        return leaf.buffer[i + offset];
+-      }
+-
+-      i -= leaf.buffer.length - offset;
+-      offset = 0;
+-      leaf = leaf.next;
+-    }
+-  }
+-  /* eslint-enable consistent-return */
+-
+-  /**
+-   * Returns a new Buffer object containing the bytes within the range specified.
+-   * @param {number} start
+-   * @param {number} end
+-   * @returns {Buffer}
+-   */
+-  slice(start, end) {
+-    /* eslint-disable no-param-reassign */
+-    if (typeof start !== 'number') {
+-      start = 0;
+-    }
+-
+-    if (typeof end !== 'number') {
+-      end = this.length;
+-    }
+-
+-    while (start < 0) {
+-      start += this.length;
+-    }
+-
+-    while (end < 0) {
+-      end += this.length;
+-    }
+-
+-    end = Math.min(end, this.length);
+-
+-    if (start >= this.length || end === 0) {
+-      return Buffer.alloc(0);
+-    }
+-
+-    const tmpStart = start;
+-    start = Math.min(tmpStart, end);
+-    end = Math.max(tmpStart, end);
+-
+-    const subset = this.queue.slice(start + this.offset, end + this.offset);
+-
+-    // Buffer.concat() doesn't have optimization for count == 1
+-    if (subset.count === 1) {
+-      return subset.first;
+-    }
+-
+-    let leaf = subset.head;
+-    const target = Buffer.allocUnsafe(subset.length);
+-    let offset = 0;
+-
+-    for (let i = 0; i < subset.count; i += 1) {
+-      target.set(leaf.buffer, offset);
+-      offset += leaf.buffer.length;
+-      leaf = leaf.next;
+-    }
+-
+-    return target;
+-    /* eslint-enable no-param-reassign */
+-  }
+-
+-  /**
+-   * Return a string representation of the buffer.
+-   * @param {string} encoding
+-   * @param {number} start
+-   * @param {number} end
+-   * @returns {string}
+-   */
+-  toString(encoding, start, end) {
+-    return this.slice(start, end).toString(encoding);
+-  }
+-
+-  /**
+-   * Shift bytes off the start of the list.
+-   * @param {number} bytes
+-   */
+-  consume(bytes) {
+-    let remainder = bytes;
+-
+-    while (this.length > 0) {
+-      const firstLength = this.queue.first.length - this.offset;
+-
+-      if (remainder >= firstLength) {
+-        this.queue.shift();
+-
+-        remainder -= firstLength;
+-        this.offset = 0;
+-      } else {
+-        this.offset += remainder;
+-        break;
+-      }
+-    }
+-  }
+-
+-  /**
+-   * Returns the first (least) index of an element
+-   * within the list equal to the specified value,
+-   * or -1 if none is found.
+-   * @param {number} byte
+-   * @param {number} [offset]
+-   * @returns {number}
+-   */
+-  indexOf(byte, offset = 0) {
+-    /* eslint-disable no-param-reassign */
+-    if (!Number.isInteger(byte)) {
+-      throw new TypeError('Invalid argument 1');
+-    }
+-
+-    if (byte < 0 || byte > 0xff) {
+-      throw new Error('Invalid argument 1');
+-    }
+-
+-    if (!Number.isInteger(offset)) {
+-      offset = 0;
+-    }
+-
+-    while (offset >= this.length) {
+-      offset -= this.length;
+-    }
+-
+-    while (offset < 0) {
+-      offset += this.length;
+-    }
+-
+-    let leaf = this.queue.head;
+-    let bias = 0;
+-
+-    const next = () => {
+-      bias += leaf.buffer.length;
+-      leaf = leaf.next;
+-    };
+-
+-    while (leaf) {
+-      let byteOffset = 0;
+-
+-      if (leaf === this.queue.head) {
+-        byteOffset += this.offset;
+-      }
+-
+-      // `offset` is point to next chunk
+-      if (offset >= leaf.buffer.length - byteOffset) {
+-        offset -= leaf.buffer.length - byteOffset;
+-        next();
+-        continue; // eslint-disable-line no-continue
+-      }
+-
+-      // `offset` is point to current chunk
+-      if (offset < leaf.buffer.length) {
+-        byteOffset += offset;
+-      }
+-
+-      const index = leaf.buffer.indexOf(byte, byteOffset);
+-
+-      if (index > -1) {
+-        return index + bias - this.offset;
+-      }
+-
+-      next();
+-
+-      if (byteOffset > this.offset) {
+-        offset = 0;
+-      }
+-    }
+-
+-    return -1;
+-    /* eslint-enable no-param-reassign */
+-  }
+-}
+-
+-const fixedReadMethods = {
+-  readDoubleBE: 8,
+-  readDoubleLE: 8,
+-  readFloatBE: 4,
+-  readFloatLE: 4,
+-  readInt32BE: 4,
+-  readInt32LE: 4,
+-  readUInt32BE: 4,
+-  readUInt32LE: 4,
+-  readInt16BE: 2,
+-  readInt16LE: 2,
+-  readUInt16BE: 2,
+-  readUInt16LE: 2,
+-  readInt8: 1,
+-  readUInt8: 1,
+-};
+-
+-Object.keys(fixedReadMethods).forEach(method => {
+-  const gen = createFunction();
+-
+-  gen(`
+-    function bufferlist_${method}(offset = 0) {
+-      const start = offset + this.offset;
+-      const head = this.queue.first;
+-      const size = ${gen.formats.d(fixedReadMethods[method])};
+-      const isFirtsChunkEnough = head.length - start >= size;
+-
+-      return isFirtsChunkEnough
+-        ? head.${method}(start)
+-        : this.slice(offset, offset + size).${method}(0)
+-    }
+-  `);
+-
+-  BufferList.prototype[method] = gen.toFunction();
+-});
+-
+-const metaReadMethods = ['readIntBE', 'readIntLE', 'readUIntBE', 'readUIntLE'];
+-
+-metaReadMethods.forEach(method => {
+-  const gen = createFunction();
+-
+-  gen(`
+-    function bufferlist_${method}(size, offset = 0) {
+-      const start = offset + this.offset;
+-      const head = this.queue.first;
+-      const isFirtsChunkEnough = head.length - start >= size;
+-
+-      return isFirtsChunkEnough
+-        ? head.${method}(start, size)
+-        : this.slice(offset, offset + size).${method}(0, size)
+-    }
+-  `);
+-
+-  BufferList.prototype[method] = gen.toFunction();
+-});
+-
+-const fixedWriteMethods = {
+-  writeDoubleBE: 8,
+-  writeDoubleLE: 8,
+-  writeFloatBE: 4,
+-  writeFloatLE: 4,
+-  writeInt32BE: 4,
+-  writeInt32LE: 4,
+-  writeUInt32BE: 4,
+-  writeUInt32LE: 4,
+-  writeInt16BE: 2,
+-  writeInt16LE: 2,
+-  writeUInt16BE: 2,
+-  writeUInt16LE: 2,
+-  writeInt8: 1,
+-  writeUInt8: 1,
+-};
+-
+-Object.keys(fixedWriteMethods).forEach(method => {
+-  const gen = createFunction();
+-
+-  gen(`
+-    function bufferlist_${method}(value) {
+-      const size = ${gen.formats.d(fixedWriteMethods[method])};
+-      const buf = Buffer.allocUnsafe(size);
+-      buf.${method}(value, 0);
+-      this.append(buf);
+-    }
+-  `);
+-
+-  BufferList.prototype[method] = gen.toFunction();
+-});
+-
+-const metaWriteMethods = [
+-  'writeIntBE',
+-  'writeIntLE',
+-  'writeUIntBE',
+-  'writeUIntLE',
+-];
+-
+-metaWriteMethods.forEach(method => {
+-  const gen = createFunction();
+-
+-  gen(`
+-    function bufferlist_${method}(value, size) {
+-      const buf = Buffer.allocUnsafe(size);
+-      buf.${method}(value, 0, size);
+-      this.append(buf);
+-    }
+-  `);
+-
+-  BufferList.prototype[method] = gen.toFunction();
+-});
+-
+-module.exports = BufferList;
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/internal/linked-list.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/internal/linked-list.js
+deleted file mode 100644
+index fab8915..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/internal/linked-list.js
++++ /dev/null
+@@ -1,200 +0,0 @@
+-'use strict';
+-
+-/**
+- * A Leaf in a linked list.
+- */
+-class Chunk {
+-  /**
+-   * @class Chunk
+-   */
+-  constructor() {
+-    /** @type {Chunk} */
+-    this.next = null;
+-    /** @type {Buffer} */
+-    this.buffer = null;
+-  }
+-}
+-
+-/**
+- * Linked list for buffers.
+- */
+-module.exports = class LinkedList {
+-  /**
+-   * @class LinkedList
+-   */
+-  constructor() {
+-    /** @type {Chunk} */
+-    this.head = null;
+-    /** @type {Chunk} */
+-    this.tail = null;
+-
+-    this.length = 0;
+-    this.count = 0;
+-  }
+-
+-  /**
+-   * Add a buffer to the end of the list.
+-   * @param {Buffer} buf
+-   */
+-  push(buf) {
+-    const entry = new Chunk();
+-    entry.buffer = buf;
+-
+-    if (this.length > 0) {
+-      this.tail.next = entry;
+-    } else {
+-      this.head = entry;
+-    }
+-
+-    this.tail = entry;
+-    this.length += buf.length;
+-    this.count += 1;
+-  }
+-
+-  /**
+-   * Add a buffer to the start of the list.
+-   * @param {Buffer} buf
+-   */
+-  unshift(buf) {
+-    const entry = new Chunk();
+-    entry.buffer = buf;
+-    entry.next = this.head;
+-
+-    if (this.isEmpty()) {
+-      this.tail = entry;
+-    }
+-
+-    this.head = entry;
+-    this.length += buf.length;
+-    this.count += 1;
+-  }
+-
+-  /**
+-   * Remove and return first element's buffer.
+-   * @returns {Buffer|null}
+-   */
+-  shift() {
+-    if (this.isEmpty()) {
+-      return null;
+-    }
+-
+-    const ret = this.head.buffer;
+-
+-    if (this.head === this.tail) {
+-      this.head = null;
+-      this.tail = null;
+-    } else {
+-      this.head = this.head.next;
+-    }
+-
+-    this.length -= ret.length;
+-    this.length = Math.max(this.length, 0);
+-    this.count -= 1;
+-
+-    return ret;
+-  }
+-
+-  /**
+-   * Get buffer of first element or null.
+-   * @returns {Buffer|null}
+-   */
+-  get first() {
+-    if (this.isEmpty()) {
+-      return null;
+-    }
+-
+-    return this.head.buffer;
+-  }
+-
+-  /**
+-   * Get buffer of last element or null.
+-   * @returns {Buffer|null}
+-   */
+-  get last() {
+-    if (this.isEmpty()) {
+-      return null;
+-    }
+-
+-    return this.tail.buffer;
+-  }
+-
+-  /**
+-   * Check if a list is empty.
+-   * @returns {bool}
+-   */
+-  isEmpty() {
+-    return this.length === 0;
+-  }
+-
+-  /**
+-   * Remove all elements from a list.
+-   */
+-  clear() {
+-    this.head = null;
+-    this.tail = null;
+-    this.length = 0;
+-    this.count = 0;
+-  }
+-
+-  /**
+-   * Return a subset of linked list.
+-   * @param {number} start Offset bytes from start.
+-   * @param {number} end Bytes count.
+-   * @returns {LinkedList}
+-   */
+-  slice(start, end) {
+-    if (start < 0 || start >= this.length) {
+-      return new LinkedList();
+-    }
+-
+-    if (end < 0 || end > this.length || end < start) {
+-      return new LinkedList();
+-    }
+-
+-    const list = new LinkedList();
+-
+-    let leaf = this.head;
+-    let offsetStart = start;
+-    let offsetEnd = end;
+-
+-    // Find head of slice.
+-    while (leaf) {
+-      if (leaf.buffer.length > offsetStart) {
+-        if (offsetStart === 0 && leaf.buffer.length <= offsetEnd) {
+-          list.push(leaf.buffer);
+-        } else if (leaf.buffer.length >= offsetEnd) {
+-          list.push(leaf.buffer.slice(offsetStart, offsetEnd));
+-        } else {
+-          list.push(leaf.buffer.slice(offsetStart));
+-        }
+-
+-        break;
+-      }
+-
+-      offsetStart -= leaf.buffer.length;
+-      offsetEnd -= leaf.buffer.length;
+-      leaf = leaf.next;
+-    }
+-
+-    // Find tail of slice
+-    if (leaf.buffer.length < offsetEnd) {
+-      while (leaf) {
+-        if (leaf.buffer.length === offsetEnd) {
+-          list.push(leaf.buffer);
+-          break;
+-        } else if (leaf.buffer.length > offsetEnd) {
+-          list.push(leaf.buffer.slice(0, offsetEnd));
+-          break;
+-        } else if (offsetStart < 0 && leaf.buffer.length < offsetEnd) {
+-          list.push(leaf.buffer);
+-        }
+-
+-        offsetStart -= leaf.buffer.length;
+-        offsetEnd -= leaf.buffer.length;
+-        leaf = leaf.next;
+-      }
+-    }
+-
+-    return list;
+-  }
+-};
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/internal/meta.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/internal/meta.js
+deleted file mode 100644
+index cda5116..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/internal/meta.js
++++ /dev/null
+@@ -1,57 +0,0 @@
+-'use strict';
+-
+-const symbols = require('internal/symbols');
+-
+-/**
+- * Store extended info between encode/decode calls.
+- */
+-module.exports = class Metadata {
+-  /**
+-   * @class Metadata
+-   */
+-  constructor() {
+-    // The number of bytes are processed.
+-    this[symbols.bytes] = 0;
+-
+-    // Root node.
+-    this.node = undefined;
+-
+-    // Current node.
+-    this.current = undefined;
+-  }
+-
+-  /**
+-   * The number of bytes are processed.
+-   * @returns {number}
+-   */
+-  get bytes() {
+-    return this[symbols.bytes];
+-  }
+-
+-  /**
+-   * Clone provided metadata.
+-   * @param {Metadata} metadata
+-   * @returns {Metadata}
+-   */
+-  static clone(metadata) {
+-    const meta = new Metadata();
+-
+-    if (metadata instanceof Metadata) {
+-      meta.node = metadata.node;
+-      meta.current = metadata.current;
+-    }
+-
+-    return meta;
+-  }
+-
+-  /**
+-   * Remove internal references to processed nodes.
+-   * @param {Metadata} metadata
+-   */
+-  static clean(metadata) {
+-    if (metadata instanceof Metadata) {
+-      metadata.node = undefined;
+-      metadata.current = undefined;
+-    }
+-  }
+-};
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/internal/symbols.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/internal/symbols.js
+deleted file mode 100644
+index 6aae3dc..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/internal/symbols.js
++++ /dev/null
+@@ -1,12 +0,0 @@
+-'use strict';
+-
+-// Helps to "skip" field in result.
+-const skip = Symbol('skip');
+-
+-// Private field `bytes` in Metadata.
+-const bytes = Symbol('bytes');
+-
+-module.exports = {
+-  skip,
+-  bytes,
+-};
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/__mocks__/binary-stream.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/__mocks__/binary-stream.js
+deleted file mode 100644
+index b426897..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/__mocks__/binary-stream.js
++++ /dev/null
+@@ -1,8 +0,0 @@
+-'use strict';
+-
+-module.exports = class BinaryStream {
+-  /**
+-   * @private
+-   */
+-  append() {} // eslint-disable-line class-methods-use-this
+-};
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/binary-stream.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/binary-stream.js
+deleted file mode 100644
+index 77b8015..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/binary-stream.js
++++ /dev/null
+@@ -1,227 +0,0 @@
+-'use strict';
+-
+-const { Transform } = require('stream');
+-const createFunction = require('generate-function');
+-const BufferList = require('internal/buffer-list');
+-const NotEnoughDataError = require('lib/not-enough-data-error');
+-
+-const kbuffer = Symbol('buffer');
+-
+-/**
+- * Binary data queue.
+- * Also represent a part of BufferList API.
+- */
+-class BinaryStream extends Transform {
+-  /**
+-   * @class Binary
+-   * @param {Object} options
+-   */
+-  constructor(options = {}) {
+-    super(options);
+-
+-    this[kbuffer] = new BufferList();
+-  }
+-
+-  /**
+-   * @returns {BufferList}
+-   */
+-  get buffer() {
+-    return this[kbuffer];
+-  }
+-
+-  /**
+-   * @returns {number}
+-   */
+-  get length() {
+-    return this.buffer.length;
+-  }
+-
+-  /**
+-   * @param {Buffer} buf
+-   */
+-  append(buf) {
+-    this.buffer.append(buf);
+-  }
+-
+-  /**
+-   * @param {number} i
+-   * @returns {number}
+-   */
+-  get(i) {
+-    return this.buffer.get(i);
+-  }
+-
+-  /**
+-   * @param {number} [start]
+-   * @param {number} [end]
+-   * @returns {Buffer}
+-   */
+-  slice(start, end) {
+-    return this.buffer.slice(start, end);
+-  }
+-
+-  /**
+-   * @param {number} bytes
+-   */
+-  consume(bytes) {
+-    this.buffer.consume(bytes);
+-  }
+-
+-  /**
+-   * @param {string} encoding
+-   * @param {number} [start]
+-   * @param {number} [end]
+-   * @returns {string}
+-   */
+-  toString(encoding, start, end) {
+-    return this.buffer.toString(encoding, start, end);
+-  }
+-
+-  /**
+-   * Returns the first (least) index of an element
+-   * within the list equal to the specified value,
+-   * or -1 if none is found.
+-   * @param {number} byte
+-   * @param {number} [offset]
+-   * @returns {number}
+-   */
+-  indexOf(byte, offset = 0) {
+-    return this.buffer.indexOf(byte, offset);
+-  }
+-
+-  /**
+-   * Read provided amount of bytes from stream.
+-   * @param {number} size
+-   * @returns {Buffer}
+-   */
+-  readBuffer(size) {
+-    assertSize(size, this.length);
+-
+-    const buf = this.slice(0, size);
+-    this.consume(size);
+-
+-    return buf;
+-  }
+-
+-  /**
+-   * Write provided chunk to the stream.
+-   * @param {Buffer} chunk
+-   */
+-  writeBuffer(chunk) {
+-    this.append(chunk);
+-  }
+-}
+-
+-const fixedReadMethods = {
+-  readDoubleBE: 8,
+-  readDoubleLE: 8,
+-  readFloatBE: 4,
+-  readFloatLE: 4,
+-  readInt32BE: 4,
+-  readInt32LE: 4,
+-  readUInt32BE: 4,
+-  readUInt32LE: 4,
+-  readInt16BE: 2,
+-  readInt16LE: 2,
+-  readUInt16BE: 2,
+-  readUInt16LE: 2,
+-  readInt8: 1,
+-  readUInt8: 1,
+-};
+-
+-const metaReadMethods = ['readIntBE', 'readIntLE', 'readUIntBE', 'readUIntLE'];
+-
+-Object.keys(fixedReadMethods).forEach(method => {
+-  const gen = createFunction();
+-
+-  gen(`
+-    function binary_${method}() {
+-      const bytes = ${gen.formats.d(fixedReadMethods[method])};
+-      assertSize(bytes, this.length);
+-
+-      const res = this.buffer.${method}(0);
+-      this.consume(bytes);
+-
+-      return res;
+-    }
+-  `);
+-
+-  BinaryStream.prototype[method] = gen.toFunction({ assertSize });
+-});
+-
+-metaReadMethods.forEach(method => {
+-  const gen = createFunction();
+-
+-  gen(`
+-    function binary_${method}(size) {
+-      assertSize(size, this.length);
+-
+-      const res = this.buffer.${method}(size, 0);
+-      this.consume(size);
+-      return res;
+-    }
+-  `);
+-
+-  BinaryStream.prototype[method] = gen.toFunction({ assertSize });
+-});
+-
+-const fixedWriteMethods = [
+-  'writeDoubleBE',
+-  'writeDoubleLE',
+-  'writeFloatBE',
+-  'writeFloatLE',
+-  'writeInt32BE',
+-  'writeInt32LE',
+-  'writeUInt32BE',
+-  'writeUInt32LE',
+-  'writeInt16BE',
+-  'writeInt16LE',
+-  'writeUInt16BE',
+-  'writeUInt16LE',
+-  'writeInt8',
+-  'writeUInt8',
+-];
+-
+-fixedWriteMethods.forEach(method => {
+-  const gen = createFunction();
+-
+-  gen(`
+-    function binary_${method}(value) {
+-      this.buffer.${method}(value);
+-    }
+-  `);
+-
+-  BinaryStream.prototype[method] = gen.toFunction();
+-});
+-
+-const metaWriteMethods = [
+-  'writeIntBE',
+-  'writeIntLE',
+-  'writeUIntBE',
+-  'writeUIntLE',
+-];
+-
+-metaWriteMethods.forEach(method => {
+-  const gen = createFunction();
+-
+-  gen(`
+-    function binary_${method}(value, size) {
+-      this.buffer.${method}(value, size);
+-    }
+-  `);
+-
+-  BinaryStream.prototype[method] = gen.toFunction();
+-});
+-
+-/**
+- * Check if stream is able to read requested amound of data.
+- * @param {number} size Requested data size to read.
+- * @param {number} length The number of bytes in stream.
+- */
+-function assertSize(size, length) {
+-  if (size > length) {
+-    throw new NotEnoughDataError(size, length);
+-  }
+-}
+-
+-module.exports = BinaryStream;
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/decode.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/decode.js
+deleted file mode 100644
+index 403c7bf..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/decode.js
++++ /dev/null
+@@ -1,106 +0,0 @@
+-'use strict';
+-
+-const { isType, isUserType, isDecodeType } = require('lib/util');
+-const BinaryStream = require('lib/binary-stream');
+-const symbols = require('internal/symbols');
+-const Metadata = require('internal/meta');
+-
+-module.exports = {
+-  decode,
+-  decodeCommon,
+-};
+-
+-/**
+- * Decode any data from provided stream using schema.
+- * @param {BinaryStream} rstream Read stream to decode.
+- * @param {Object} typeOrSchema Builtin data type or schema.
+- * @returns {*}
+- */
+-function decode(rstream, typeOrSchema) {
+-  let decodeStream = rstream;
+-
+-  if (Buffer.isBuffer(rstream)) {
+-    decodeStream = new BinaryStream();
+-    decodeStream.append(rstream);
+-  }
+-
+-  const meta = new Metadata();
+-  const value = decodeCommon(decodeStream, typeOrSchema, meta);
+-
+-  decode.bytes = meta.bytes;
+-  Metadata.clean(meta);
+-
+-  return value;
+-}
+-
+-/**
+- * @private
+- * @param {BinaryStream|Buffer} rstream
+- * @param {Object} typeOrSchema
+- * @param {Metadata} meta
+- * @returns {*}
+- */
+-function decodeCommon(rstream, typeOrSchema, meta) {
+-  if (isType(typeOrSchema)) {
+-    const value = typeOrSchema.decode.call(meta, rstream);
+-    meta[symbols.bytes] += typeOrSchema.decode.bytes;
+-    return value;
+-  }
+-
+-  return decodeSchema(rstream, typeOrSchema, meta);
+-}
+-
+-/**
+- * @private
+- * @param {BinaryStream} rstream
+- * @param {Object} schema
+- * @param {Metadata} meta
+- * @returns {Object}
+- */
+-function decodeSchema(rstream, schema, meta) {
+-  assertSchema(schema);
+-
+-  const node = Object.create(null);
+-
+-  if (meta.node === undefined) {
+-    meta.node = node;
+-    meta.current = node;
+-  } else {
+-    meta.current = node;
+-  }
+-
+-  const keys = Object.keys(schema);
+-
+-  for (let i = 0; i < keys.length; i += 1) {
+-    const key = keys[i];
+-    const type = schema[key];
+-
+-    if (!isDecodeType(type)) {
+-      node[key] = decodeSchema(rstream, type, meta);
+-      meta.current = node;
+-      continue; // eslint-disable-line no-continue
+-    }
+-
+-    const value = type.decode.call(meta, rstream);
+-    meta[symbols.bytes] += type.decode.bytes;
+-
+-    if (type[symbols.skip] === true) {
+-      continue; // eslint-disable-line no-continue
+-    }
+-
+-    node[key] = value;
+-  }
+-
+-  return node;
+-}
+-
+-/**
+- * Check if argument is schema.
+- * @param {Object} schema
+- * @private
+- */
+-function assertSchema(schema) {
+-  if (!isUserType(schema)) {
+-    throw new TypeError('Argument #2 should be a plain object.');
+-  }
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/encode.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/encode.js
+deleted file mode 100644
+index 723d7d1..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/encode.js
++++ /dev/null
+@@ -1,100 +0,0 @@
+-'use strict';
+-
+-const { isUserType, isEncodeType, isType } = require('lib/util');
+-const symbols = require('internal/symbols');
+-const Metadata = require('internal/meta');
+-const BinaryStream = require('lib/binary-stream');
+-
+-module.exports = {
+-  encode,
+-  encodeCommon,
+-};
+-
+-/**
+- * @param {any} obj
+- * @param {any} type
+- * @param {BinaryStream} [target]
+- * @returns {BinaryStream}
+- */
+-function encode(obj, type, target) {
+-  const meta = new Metadata();
+-
+-  // Check for legacy interface.
+-  if (type instanceof BinaryStream) {
+-    const tmp = target;
+-    target = type; // eslint-disable-line no-param-reassign
+-    type = tmp; // eslint-disable-line no-param-reassign
+-  }
+-
+-  if (!(target instanceof BinaryStream)) {
+-    target = new BinaryStream(); // eslint-disable-line no-param-reassign
+-  }
+-
+-  encodeCommon(obj, target, type, meta);
+-
+-  encode.bytes = meta.bytes;
+-  Metadata.clean(meta);
+-
+-  return target;
+-}
+-
+-/**
+- * @param {any} object
+- * @param {EncodeStream} wstream
+- * @param {any} typeOrSchema
+- * @param {Metadata} context
+- */
+-function encodeCommon(object, wstream, typeOrSchema, context) {
+-  if (isType(typeOrSchema)) {
+-    typeOrSchema.encode.call(context, object, wstream);
+-    context[symbols.bytes] += typeOrSchema.encode.bytes;
+-  } else {
+-    encodeSchema(object, wstream, typeOrSchema, context);
+-  }
+-}
+-
+-/**
+- * @param {any} object
+- * @param {EncodeStream} wstream
+- * @param {any} schema
+- * @param {Metadata} context
+- */
+-function encodeSchema(object, wstream, schema, context) {
+-  assertSchema(schema);
+-
+-  if (context.node === undefined) {
+-    context.node = object;
+-    context.current = object;
+-  } else {
+-    context.current = object;
+-  }
+-
+-  const keys = Object.keys(schema);
+-
+-  for (let i = 0; i < keys.length; i += 1) {
+-    const key = keys[i];
+-    const type = schema[key];
+-    const value = object[key];
+-
+-    if (!isEncodeType(type)) {
+-      encodeSchema(value, wstream, type, context);
+-      context.current = object;
+-
+-      continue; // eslint-disable-line no-continue
+-    }
+-
+-    type.encode.call(context, value, wstream);
+-    context[symbols.bytes] += type.encode.bytes;
+-  }
+-}
+-
+-/**
+- * Check if argument is schema.
+- * @param {Object} schema
+- * @private
+- */
+-function assertSchema(schema) {
+-  if (!isUserType(schema)) {
+-    throw new TypeError('Argument `schema` should be a plain object.');
+-  }
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/encoding-length.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/encoding-length.js
+deleted file mode 100644
+index 93725af..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/encoding-length.js
++++ /dev/null
+@@ -1,72 +0,0 @@
+-'use strict';
+-
+-const { isUserType, isType } = require('lib/util');
+-const Metadata = require('internal/meta');
+-const symbols = require('internal/symbols');
+-
+-module.exports = {
+-  encodingLength,
+-  encodingLengthCommon,
+-};
+-
+-/**
+- * Get the number of bytes to encode `obj` using `schema`.
+- * @param {*} obj Any valid js object.
+- * @param {Object} schema
+- * @returns {number}
+- */
+-function encodingLength(obj, schema) {
+-  const context = new Metadata();
+-
+-  encodingLengthCommon(obj, schema, context);
+-  Metadata.clean(context);
+-
+-  return context.bytes;
+-}
+-
+-/**
+- * @param {any} item
+- * @param {Object} typeOrSchema
+- * @param {Metadata} context
+- */
+-function encodingLengthCommon(item, typeOrSchema, context) {
+-  if (isType(typeOrSchema)) {
+-    context[symbols.bytes] += typeOrSchema.encodingLength.call(context, item);
+-  } else {
+-    encodingLengthSchema(item, typeOrSchema, context);
+-  }
+-}
+-
+-/**
+- * @param {any} item
+- * @param {Object} schema
+- * @param {Metadata} context
+- */
+-function encodingLengthSchema(item, schema, context) {
+-  if (!isUserType(schema)) {
+-    throw new TypeError('Argument `schema` should be a plain object.');
+-  }
+-
+-  if (context.node === undefined) {
+-    context.node = item;
+-    context.current = item;
+-  } else {
+-    context.current = item;
+-  }
+-
+-  const keys = Object.keys(schema);
+-
+-  for (let i = 0; i < keys.length; i += 1) {
+-    const key = keys[i];
+-    const type = schema[key];
+-    const value = item[key];
+-
+-    if (!isType(type)) {
+-      encodingLengthSchema(value, type, context);
+-      context.current = item;
+-      continue; // eslint-disable-line no-continue
+-    }
+-
+-    context[symbols.bytes] += type.encodingLength.call(context, value);
+-  }
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/not-enough-data-error.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/not-enough-data-error.js
+deleted file mode 100644
+index f52fbaf..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/not-enough-data-error.js
++++ /dev/null
+@@ -1,18 +0,0 @@
+-'use strict';
+-
+-/**
+- * Represent an unexpected end of decode stream.
+- */
+-module.exports = class NotEnoughDataError extends Error {
+-  /**
+-   * @class NotEnoughDataError
+-   * @param {number} expected The number of expected bytes.
+-   * @param {number} received The number of received bytes.
+-   */
+-  constructor(expected, received) {
+-    const message = `requested ${expected} bytes but only ${received} available`;
+-
+-    super(message);
+-    this.name = 'NotEnoughDataError';
+-  }
+-};
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/transaction.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/transaction.js
+deleted file mode 100644
+index 97fae03..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/transaction.js
++++ /dev/null
+@@ -1,152 +0,0 @@
+-'use strict';
+-
+-const createFunction = require('generate-function');
+-const NotEnoughDataError = require('lib/not-enough-data-error');
+-
+-/**
+- * Helps to read the whole data chunk.
+- */
+-class Transaction {
+-  /**
+-   * @class Transaction
+-   * @param {DecodeStream} stream
+-   */
+-  constructor(stream) {
+-    this.stream = stream;
+-    this.index = 0;
+-  }
+-
+-  /**
+-   * @param {Buffer} buf
+-   */
+-  append(buf) {
+-    this.stream.append(buf);
+-  }
+-
+-  /**
+-   * Confirm reading and removes data from stream.
+-   */
+-  commit() {
+-    this.stream.consume(this.index);
+-  }
+-
+-  /**
+-   * Get byte from stream by index.
+-   * @param {number} i
+-   * @returns {number}
+-   */
+-  get(i = 0) {
+-    return this.stream.get(this.index + i);
+-  }
+-
+-  /**
+-   * Get the number of bytes in stream.
+-   * @returns {number}
+-   */
+-  get length() {
+-    return this.stream.length;
+-  }
+-
+-  /**
+-   * @param {number} [start]
+-   * @param {number} [end]
+-   * @returns {Buffer}
+-   */
+-  slice(start, end) {
+-    return this.stream.slice(start, end);
+-  }
+-
+-  /**
+-   * @param {string} encoding
+-   * @param {number} [start]
+-   * @param {number} [end]
+-   * @returns {string}
+-   */
+-  toString(encoding, start, end) {
+-    return this.stream.toString(encoding, start, end);
+-  }
+-
+-  /**
+-   * Read provided amount of bytes from stream.
+-   * @param {number} size
+-   * @returns {Buffer}
+-   */
+-  readBuffer(size) {
+-    assertSize(this.index + size, this.length);
+-
+-    const buf = this.stream.slice(this.index, this.index + size);
+-    this.index += size;
+-
+-    return buf;
+-  }
+-
+-  /**
+-   * @param {number} byte
+-   * @param {number} [offset]
+-   * @returns {number}
+-   */
+-  indexOf(byte, offset = 0) {
+-    return this.stream.indexOf(byte, this.index + offset) - this.index;
+-  }
+-}
+-
+-const methods = {
+-  readDoubleBE: 8,
+-  readDoubleLE: 8,
+-  readFloatBE: 4,
+-  readFloatLE: 4,
+-  readInt32BE: 4,
+-  readInt32LE: 4,
+-  readUInt32BE: 4,
+-  readUInt32LE: 4,
+-  readInt16BE: 2,
+-  readInt16LE: 2,
+-  readUInt16BE: 2,
+-  readUInt16LE: 2,
+-  readInt8: 1,
+-  readUInt8: 1,
+-};
+-
+-Object.keys(methods).forEach(method => {
+-  const gen = createFunction();
+-  const bytes = methods[method];
+-
+-  gen(`
+-    function transaction_${method}() {
+-      assertSize(this.index + ${gen.formats.d(bytes)}, this.length);
+-      const value = this.stream.buffer.${method}(this.index);
+-      this.index += ${gen.formats.d(bytes)};
+-      return value;
+-    }
+-  `);
+-
+-  Transaction.prototype[method] = gen.toFunction({ assertSize });
+-});
+-
+-['readIntBE', 'readIntLE', 'readUIntBE', 'readUIntLE'].forEach(method => {
+-  const gen = createFunction();
+-
+-  gen(`
+-    function transaction_${method}(bytes) {
+-      assertSize(this.index + bytes, this.length);
+-      const value = this.stream.buffer.${method}(bytes, this.index);
+-      this.index += bytes;
+-      return value;
+-    }
+-  `);
+-
+-  Transaction.prototype[method] = gen.toFunction({ assertSize });
+-});
+-
+-module.exports = Transaction;
+-
+-/**
+- * Check if stream is able to read requested amound of data.
+- * @param {number} size Requested data size to read.
+- * @param {number} length The number of bytes in stream.
+- */
+-function assertSize(size, length) {
+-  if (size > length) {
+-    throw new NotEnoughDataError(size, length);
+-  }
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/util.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/util.js
+deleted file mode 100644
+index 58ccd44..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/lib/util.js
++++ /dev/null
+@@ -1,56 +0,0 @@
+-'use strict';
+-
+-const isPlainObject = require('is-plain-object');
+-
+-module.exports = {
+-  isType,
+-  isUserType: isPlainObject,
+-  isFunction,
+-  isDecodeType,
+-  isEncodeType,
+-};
+-
+-/**
+- * Check if argument is data type.
+- * @param {*} type
+- * @returns {bool}
+- */
+-function isType(type) {
+-  return isObject(type) && isFunction(type.encode) && isFunction(type.decode);
+-}
+-
+-/**
+- * Check if argument is function.
+- * @param {*} value
+- * @returns {bool}
+- */
+-function isFunction(value) {
+-  return typeof value === 'function';
+-}
+-
+-/**
+- * Check if argument is object.
+- * @param {*} value
+- * @returns {bool}
+- */
+-function isObject(value) {
+-  return typeof value === 'object' && value !== null;
+-}
+-
+-/**
+- * Check if argument is data type and able to decode data.
+- * @param {*} type
+- * @returns {bool}
+- */
+-function isDecodeType(type) {
+-  return isObject(type) && isFunction(type.decode);
+-}
+-
+-/**
+- * Check if argument is data type and able to encode data.
+- * @param {*} type
+- * @returns {bool}
+- */
+-function isEncodeType(type) {
+-  return isObject(type) && isFunction(type.encode);
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/array.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/array.js
+deleted file mode 100644
+index 9f1aeca..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/array.js
++++ /dev/null
+@@ -1,245 +0,0 @@
+-'use strict';
+-
+-const { decodeCommon } = require('lib/decode');
+-const { encodeCommon } = require('lib/encode');
+-const { encodingLengthCommon } = require('lib/encoding-length');
+-const { isType, isUserType, isFunction } = require('lib/util');
+-const Metadata = require('internal/meta');
+-
+-module.exports = array;
+-
+-/**
+- * Array type.
+- * @param {Object} type Any builtin type or schema.
+- * @param {Object|number} length Number type or number.
+- * @param {string} lengthType Method of calculate the length of array.
+- * @returns {Object}
+- */
+-function array(type, length, lengthType = 'count') {
+-  if (!isType(type) && !isUserType(type)) {
+-    throw new TypeError('Argument #1 should be a valid type.');
+-  }
+-
+-  const isLengthInBytes = lengthType === 'bytes';
+-  const isnum = typeof length === 'number';
+-  const istype = isType(length);
+-  const isfunc = isFunction(length);
+-
+-  if (!isnum && !istype && !isfunc) {
+-    throw new TypeError('Unknown type of argument #1.');
+-  }
+-
+-  return {
+-    encode,
+-    decode,
+-    encodingLength,
+-  };
+-
+-  /**
+-   * Encode array's items.
+-   * @param {any[]} items Array of items to encode.
+-   * @param {EncodeStream} wstream
+-   */
+-  function encode(items, wstream) {
+-    checkArray(items);
+-
+-    // eslint-disable-next-line no-invalid-this
+-    const context = Metadata.clone(this);
+-
+-    encode.bytes = 0;
+-    let expectedSize = 0;
+-
+-    if (istype) {
+-      expectedSize = items.length;
+-    } else if (isnum) {
+-      expectedSize = length;
+-    } else if (isfunc) {
+-      expectedSize = length(context);
+-
+-      checkArraySizeType(expectedSize);
+-    }
+-
+-    if (!isLengthInBytes) {
+-      checkArraySize(expectedSize, items.length);
+-    }
+-
+-    if (isLengthInBytes) {
+-      const lengthContext = Metadata.clone(context);
+-
+-      for (const item of items) {
+-        encodingLengthCommon(item, type, lengthContext);
+-      }
+-
+-      if (istype) {
+-        expectedSize = lengthContext.bytes;
+-      }
+-
+-      checkArraySize(lengthContext.bytes, expectedSize);
+-      Metadata.clean(lengthContext);
+-    }
+-
+-    if (istype) {
+-      length.encode.call(context, expectedSize, wstream);
+-      encode.bytes += length.encode.bytes;
+-    }
+-
+-    items.forEach(item => {
+-      encodeCommon(item, wstream, type, context);
+-    });
+-
+-    encode.bytes += context.bytes;
+-    Metadata.clean(context);
+-  }
+-
+-  /**
+-   * Decode array from stream.
+-   * @param {DecodeStream} rstream
+-   * @returns {any[]}
+-   */
+-  function decode(rstream) {
+-    let expectedSize = 0;
+-    decode.bytes = 0;
+-
+-    // eslint-disable-next-line no-invalid-this
+-    const context = Metadata.clone(this);
+-
+-    if (isnum) {
+-      expectedSize = length;
+-    } else if (istype) {
+-      expectedSize = length.decode.call(context, rstream);
+-      decode.bytes += length.decode.bytes;
+-    } else if (isfunc) {
+-      expectedSize = length(context);
+-    }
+-
+-    checkArraySizeType(expectedSize);
+-
+-    let values;
+-
+-    if (isLengthInBytes) {
+-      values = decodeBytes(type, expectedSize, rstream, context);
+-    } else {
+-      values = decodeCount(type, expectedSize, rstream, context);
+-    }
+-
+-    decode.bytes += context.bytes;
+-    Metadata.clean(context);
+-    return values;
+-  }
+-
+-  /**
+-   * Returns the number of bytes of an encoded items.
+-   * @param {any[]} items
+-   * @returns {number}
+-   */
+-  function encodingLength(items) {
+-    checkArray(items);
+-
+-    // eslint-disable-next-line no-invalid-this
+-    const context = Metadata.clone(this);
+-
+-    let size = 0;
+-
+-    if (isnum && isLengthInBytes) {
+-      return length;
+-    }
+-
+-    if (istype && !isLengthInBytes) {
+-      size = length.encodingLength(items.length);
+-    }
+-
+-    for (const item of items) {
+-      encodingLengthCommon(item, type, context);
+-    }
+-
+-    Metadata.clean(context);
+-    size += context.bytes;
+-
+-    if (istype && isLengthInBytes) {
+-      size += length.encodingLength(size);
+-    }
+-
+-    return size;
+-  }
+-}
+-
+-/**
+- * Check if argument is an Array.
+- * @param {*} items
+- * @private
+- */
+-function checkArray(items) {
+-  if (!Array.isArray(items)) {
+-    throw new TypeError('Argument #1 should be an Array.');
+-  }
+-}
+-
+-/**
+- * Check if argument is a number.
+- * @param {*} length
+- * @private
+- */
+-function checkArraySizeType(length) {
+-  if (typeof length !== 'number') {
+-    throw new TypeError('Length of an array should be a number.');
+-  }
+-}
+-
+-/**
+- * Check the number of items in an Array.
+- * @param {number} requiredSize
+- * @param {number} havingSize
+- * @private
+- */
+-function checkArraySize(requiredSize, havingSize) {
+-  if (requiredSize !== havingSize) {
+-    throw new Error(
+-      `Argument #1 required length ${requiredSize} instead of ${havingSize}`
+-    );
+-  }
+-}
+-
+-/**
+- * Decode items of an array when length is the number of bytes.
+- * @param {Object} type Type of each array's item - user schema builtin type.
+- * @param {number} lengthBytes
+- * @param {DecodeStream} rstream
+- * @param {Metadata} context
+- * @returns {any[]}
+- * @private
+- */
+-function decodeBytes(type, lengthBytes, rstream, context) {
+-  const items = [];
+-  const before = context.bytes;
+-  let bytes = 0;
+-
+-  while (bytes < lengthBytes) {
+-    items.push(decodeCommon(rstream, type, context));
+-    bytes = context.bytes - before;
+-  }
+-
+-  if (bytes > lengthBytes) {
+-    throw new Error('Incorrect length of an array.');
+-  }
+-
+-  return items;
+-}
+-
+-/**
+- * Decode items of an array when length is the number of items.
+- * @param {Object} type Type of each array's item - user schema builtin type.
+- * @param {number} length
+- * @param {DecodeStream} rstream
+- * @param {Metadata} context
+- * @returns {any[]}
+- * @private
+- */
+-function decodeCount(type, length, rstream, context) {
+-  const items = new Array(length);
+-
+-  for (let i = 0; i < length; i += 1) {
+-    items[i] = decodeCommon(rstream, type, context);
+-  }
+-
+-  return items;
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/bool.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/bool.js
+deleted file mode 100644
+index 88d16d3..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/bool.js
++++ /dev/null
+@@ -1,50 +0,0 @@
+-'use strict';
+-
+-const { isType } = require('lib/util');
+-
+-module.exports = bool;
+-
+-/**
+- * Boolean type.
+- * @param {Object} type Any builtin type or schema.
+- * @returns {Object}
+- */
+-function bool(type) {
+-  if (!isType(type)) {
+-    throw new TypeError('Argument #1 should be valid type.');
+-  }
+-
+-  /**
+-   * Decode element as boolean.
+-   * @param {DecodeStream} rstream
+-   * @returns {bool}
+-   */
+-  function decode(rstream) {
+-    // eslint-disable-next-line no-invalid-this
+-    const context = this;
+-
+-    const value = type.decode.call(context, rstream);
+-    decode.bytes = type.decode.bytes;
+-
+-    return Boolean(value);
+-  }
+-
+-  /**
+-   * Encode boolean item.
+-   * @param {bool} value
+-   * @param {EncodeStream} wstream
+-   */
+-  function encode(value, wstream) {
+-    // eslint-disable-next-line no-invalid-this
+-    const context = this;
+-
+-    type.encode.call(context, value ? 1 : 0, wstream);
+-    encode.bytes = type.encode.bytes;
+-  }
+-
+-  return {
+-    encode,
+-    decode,
+-    encodingLength: type.encodingLength,
+-  };
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/buffer.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/buffer.js
+deleted file mode 100644
+index 582cb6a..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/buffer.js
++++ /dev/null
+@@ -1,163 +0,0 @@
+-'use strict';
+-
+-const { isType, isFunction } = require('lib/util');
+-const NotEnoughDataError = require('lib/not-enough-data-error');
+-const BinaryStream = require('lib/binary-stream');
+-
+-module.exports = buffer;
+-
+-/**
+- * Buffer type.
+- * @param {number|Object} length The number of bytes or type for size-prefixed buffers.
+- * @returns {Object}
+- */
+-function buffer(length) {
+-  const isnum = typeof length === 'number';
+-  const istype = isType(length);
+-  const isfunc = isFunction(length);
+-  const isNull = length === null;
+-
+-  if (!isnum && !istype && !isfunc && !isNull) {
+-    throw new TypeError('Unknown type of argument #1.');
+-  }
+-
+-  return {
+-    encode,
+-    decode,
+-    encodingLength,
+-  };
+-
+-  /**
+-   * Encode buffer.
+-   * @param {Buffer} buf
+-   * @param {EncodeStream} wstream
+-   */
+-  function encode(buf, wstream) {
+-    checkBuffer(buf);
+-    encode.bytes = 0;
+-
+-    // eslint-disable-next-line no-invalid-this
+-    const context = this;
+-
+-    if (isnum) {
+-      checkLength(length, buf.length);
+-    }
+-
+-    if (istype) {
+-      length.encode.call(context, buf.length, wstream);
+-      encode.bytes += length.encode.bytes;
+-    }
+-
+-    if (isfunc) {
+-      const expectedLength = length(context);
+-
+-      checkLengthType(expectedLength);
+-      checkLength(expectedLength, buf.length);
+-    }
+-
+-    wstream.writeBuffer(Buffer.isBuffer(buf) ? buf : buf.buffer);
+-    encode.bytes += buf.length;
+-
+-    if (isNull) {
+-      wstream.writeUInt8(0);
+-      encode.bytes += 1;
+-    }
+-  }
+-
+-  /**
+-   * Read the buffer from the stream.
+-   * @param {DecodeStream} rstream
+-   * @returns {Buffer}
+-   */
+-  function decode(rstream) {
+-    let size = 0;
+-    decode.bytes = 0;
+-
+-    // eslint-disable-next-line no-invalid-this
+-    const context = this;
+-
+-    if (isnum) {
+-      size = length;
+-    } else if (istype) {
+-      size = length.decode.call(context, rstream);
+-      decode.bytes += length.decode.bytes;
+-      checkLengthType(size);
+-    } else if (isfunc) {
+-      size = length(context);
+-
+-      checkLengthType(size);
+-    } else if (isNull) {
+-      size = rstream.indexOf(0);
+-
+-      if (size === -1) {
+-        throw new NotEnoughDataError(rstream.length + 1, rstream.length);
+-      }
+-    }
+-
+-    const buf = rstream.readBuffer(size);
+-    decode.bytes += size;
+-
+-    if (isNull) {
+-      decode.bytes += 1;
+-      rstream.consume(1);
+-    }
+-
+-    return buf;
+-  }
+-
+-  /**
+-   * Get the number bytes of an encoded buffer.
+-   * @param {Buffer} buf
+-   * @returns {number}
+-   */
+-  function encodingLength(buf) {
+-    checkBuffer(buf);
+-    let size = 0;
+-
+-    if (isnum) {
+-      return length;
+-    }
+-
+-    if (isNull) {
+-      size = 1;
+-    } else if (istype) {
+-      size = length.encodingLength(buf.length);
+-    }
+-
+-    return size + buf.length;
+-  }
+-}
+-
+-/**
+- * Check if item is a Buffer.
+- * @param {any} buf
+- * @private
+- */
+-function checkBuffer(buf) {
+-  if (!Buffer.isBuffer(buf) && !(buf instanceof BinaryStream)) {
+-    throw new TypeError('Argument 1 should be a Buffer or a BinaryStream.');
+-  }
+-}
+-
+-/**
+- * Check the length of a Buffer to encode.
+- * @param {number} requiredSize
+- * @param {number} havingSize
+- */
+-function checkLength(requiredSize, havingSize) {
+-  if (requiredSize !== havingSize) {
+-    throw new Error(
+-      `Buffer required length ${requiredSize} instead of ${havingSize}`
+-    );
+-  }
+-}
+-
+-/**
+- * Check if the length type is a number.
+- * @param {any} length
+- */
+-function checkLengthType(length) {
+-  if (typeof length !== 'number') {
+-    throw new TypeError('Length of a buffer should be a number.');
+-  }
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/numbers.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/numbers.js
+deleted file mode 100644
+index 1cf8737..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/numbers.js
++++ /dev/null
+@@ -1,98 +0,0 @@
+-'use strict';
+-
+-const createFunction = require('generate-function');
+-
+-module.exports = {
+-  doublebe: createFastStub(8, 'writeDoubleBE', 'readDoubleBE'),
+-  doublele: createFastStub(8, 'writeDoubleLE', 'readDoubleLE'),
+-  floatbe: createFastStub(4, 'writeFloatBE', 'readFloatBE'),
+-  floatle: createFastStub(4, 'writeFloatLE', 'readFloatLE'),
+-  int8: createFastStub(1, 'writeInt8', 'readInt8'),
+-  uint8: createFastStub(1, 'writeUInt8', 'readUInt8'),
+-  int16be: createFastStub(2, 'writeInt16BE', 'readInt16BE'),
+-  uint16be: createFastStub(2, 'writeUInt16BE', 'readUInt16BE'),
+-  int16le: createFastStub(2, 'writeInt16LE', 'readInt16LE'),
+-  uint16le: createFastStub(2, 'writeUInt16LE', 'readUInt16LE'),
+-  int32be: createFastStub(4, 'writeInt32BE', 'readInt32BE'),
+-  uint32be: createFastStub(4, 'writeUInt32BE', 'readUInt32BE'),
+-  int32le: createFastStub(4, 'writeInt32LE', 'readInt32LE'),
+-  uint32le: createFastStub(4, 'writeUInt32LE', 'readUInt32LE'),
+-  int24be: createFastStubGeneric(3, 'writeIntBE', 'readIntBE'),
+-  uint24be: createFastStubGeneric(3, 'writeUIntBE', 'readUIntBE'),
+-  int24le: createFastStubGeneric(3, 'writeIntLE', 'readIntLE'),
+-  uint24le: createFastStubGeneric(3, 'writeUIntLE', 'readUIntLE'),
+-  int40be: createFastStubGeneric(5, 'writeIntBE', 'readIntBE'),
+-  uint40be: createFastStubGeneric(5, 'writeUIntBE', 'readUIntBE'),
+-  int40le: createFastStubGeneric(5, 'writeIntLE', 'readIntLE'),
+-  uint40le: createFastStubGeneric(5, 'writeUIntLE', 'readUIntLE'),
+-  int48be: createFastStubGeneric(6, 'writeIntBE', 'readIntBE'),
+-  uint48be: createFastStubGeneric(6, 'writeUIntBE', 'readUIntBE'),
+-  int48le: createFastStubGeneric(6, 'writeIntLE', 'readIntLE'),
+-  uint48le: createFastStubGeneric(6, 'writeUIntLE', 'readUIntLE'),
+-};
+-
+-/**
+- * Generate number type for provided the number of bytes.
+- * @param {number} size
+- * @param {string} write
+- * @param {string} read
+- * @returns {Object}
+- * @private
+- */
+-function createFastStub(size, write, read) {
+-  const genread = createFunction();
+-  const genwrite = createFunction();
+-
+-  genread(`
+-    function decode_${read}(rstream) {
+-      decode_${read}.bytes = ${genread.formats.d(size)};
+-      return rstream.${read}()
+-    }
+-  `);
+-
+-  genwrite(`
+-    function encode_${write}(value, wstream) {
+-      wstream.${write}(value);
+-      encode_${write}.bytes = ${genread.formats.d(size)};
+-    }
+-  `);
+-
+-  return {
+-    encodingLength: () => size,
+-    encode: genwrite.toFunction(),
+-    decode: genread.toFunction(),
+-  };
+-}
+-
+-/**
+- * Generate number type for provided the number of bytes.
+- * @param {number} size
+- * @param {string} write
+- * @param {string} read
+- * @returns {Object}
+- * @private
+- */
+-function createFastStubGeneric(size, write, read) {
+-  const genread = createFunction();
+-  const genwrite = createFunction();
+-
+-  genread(`
+-    function decode_${read}(rstream) {
+-      decode_${read}.bytes = ${genread.formats.d(size)};
+-      return rstream.${read}(${genread.formats.d(size)})
+-    }
+-  `);
+-
+-  genwrite(`
+-    function encode_${write}(value, wstream) {
+-      wstream.${write}(value, ${genread.formats.d(size)});
+-      encode_${write}.bytes = ${genread.formats.d(size)};
+-    }
+-  `);
+-
+-  return {
+-    encodingLength: () => size,
+-    encode: genwrite.toFunction(),
+-    decode: genread.toFunction(),
+-  };
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/reserved.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/reserved.js
+deleted file mode 100644
+index e887a6f..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/reserved.js
++++ /dev/null
+@@ -1,101 +0,0 @@
+-'use strict';
+-
+-const { decodeCommon } = require('lib/decode');
+-const { encodeCommon } = require('lib/encode');
+-const { encodingLengthCommon } = require('lib/encoding-length');
+-const { isType, isFunction } = require('lib/util');
+-const symbols = require('internal/symbols');
+-const Metadata = require('internal/meta');
+-
+-module.exports = reserved;
+-
+-/**
+- * Type for reserved data.
+- * @param {Object} type Any builtin type or schema.
+- * @param {number} size The number of reserved items.
+- * @returns {Object}
+- */
+-function reserved(type, size = 1) {
+-  if (!isType(type)) {
+-    throw new TypeError('Invalid data type.');
+-  }
+-
+-  if (!Number.isInteger(size) && !isFunction(size)) {
+-    throw new TypeError('Argument #2 should be a valid integer or function.');
+-  }
+-
+-  return {
+-    [symbols.skip]: true,
+-    encodingLength,
+-    decode,
+-    encode,
+-  };
+-
+-  /**
+-   * Get the number of bytes to encode value.
+-   * @param {any} value
+-   * @returns {number}
+-   */
+-  function encodingLength(value) {
+-    // eslint-disable-next-line no-invalid-this
+-    const context = Metadata.clone(this);
+-
+-    const count = isFunction(size) ? size(context) : size;
+-
+-    encodingLengthCommon(value, type, context);
+-    Metadata.clean(context);
+-
+-    return context.bytes * count;
+-  }
+-
+-  /**
+-   * Silently decode items.
+-   * @param {DecodeStream} rstream
+-   */
+-  function decode(rstream) {
+-    // eslint-disable-next-line no-invalid-this
+-    const context = Metadata.clone(this);
+-    decode.bytes = 0;
+-
+-    const count = isFunction(size) ? size(context) : size;
+-
+-    if (count === 0) {
+-      Metadata.clean(context);
+-      return;
+-    }
+-
+-    for (let i = count; i > 0; i -= 1) {
+-      decodeCommon(rstream, type, context);
+-    }
+-
+-    decode.bytes = context.bytes;
+-    Metadata.clean(context);
+-  }
+-
+-  /**
+-   * Encode reserved data.
+-   * Fill with zeros the number of required bytes.
+-   * @param {any} value
+-   * @param {EncodeStream} wstream
+-   */
+-  function encode(value, wstream) {
+-    encode.bytes = 0;
+-
+-    // eslint-disable-next-line no-invalid-this
+-    const context = Metadata.clone(this);
+-
+-    const count = isFunction(size) ? size(context) : size;
+-
+-    if (count === 0) {
+-      Metadata.clean(context);
+-      return;
+-    }
+-
+-    for (let i = count; i > 0; i -= 1) {
+-      encodeCommon(0, wstream, type, context);
+-    }
+-
+-    encode.bytes = context.bytes;
+-    Metadata.clean(context);
+-  }
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/select.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/select.js
+deleted file mode 100644
+index d407647..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/select.js
++++ /dev/null
+@@ -1,56 +0,0 @@
+-'use strict';
+-
+-const symbols = require('internal/symbols');
+-const { decodeCommon } = require('lib/decode');
+-const Metadata = require('internal/meta');
+-
+-module.exports = select;
+-
+-/**
+- * Type for multiple conditions.
+- * Works almost like `switch` operator.
+- * @param {...any} whenTypes The `when` type.
+- * @returns {Object}
+- */
+-function select(...whenTypes) {
+-  if (whenTypes.length === 0) {
+-    throw new TypeError('You should set at least one condition type.');
+-  }
+-
+-  const result = {
+-    decode,
+-    encode: () => {},
+-    [symbols.skip]: true,
+-  };
+-
+-  return result;
+-
+-  /* eslint-disable consistent-return */
+-  /**
+-   * Decode data using a first success contifion.
+-   * @param {DecodeStream} rstream
+-   * @returns {any}
+-   */
+-  function decode(rstream) {
+-    decode.bytes = 0;
+-    const context = Metadata.clone(this); // eslint-disable-line no-invalid-this
+-
+-    for (const when of whenTypes) {
+-      // eslint-disable-next-line no-invalid-this
+-      const probalyValue = decodeCommon(rstream, when, context);
+-
+-      if (when[symbols.skip] === true) {
+-        continue; // eslint-disable-line no-continue
+-      }
+-
+-      decode.bytes = context.bytes;
+-      Metadata.clean(context);
+-
+-      result[symbols.skip] = false;
+-      return probalyValue;
+-    }
+-
+-    result[symbols.skip] = true;
+-  }
+-  /* eslint-enable consistent-return */
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/string.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/string.js
+deleted file mode 100644
+index d9e2191..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/string.js
++++ /dev/null
+@@ -1,260 +0,0 @@
+-'use strict';
+-
+-const { isType } = require('lib/util');
+-const NotEnoughDataError = require('lib/not-enough-data-error');
+-
+-module.exports = string;
+-
+-/**
+- * Type for strings.
+- * @param {Object|number|null} length The number of bytes or type for size-prefixed strings.
+- * @param {string} encoding
+- * @returns {Object}
+- */
+-function string(length, encoding = 'ascii') {
+-  if (!Buffer.isEncoding(encoding)) {
+-    throw new Error('Argument #2 should be an encoding name.');
+-  }
+-
+-  if (typeof length === 'number') {
+-    return {
+-      encode: encodeFixedString(length, encoding),
+-      decode: decodeFixedString(length, encoding),
+-      encodingLength: () => length,
+-    };
+-  }
+-
+-  if (isType(length)) {
+-    return {
+-      encode: encodeSizePrefixedString(length, encoding),
+-      decode: decodeSizePrefixedString(length, encoding),
+-      encodingLength: encodingLengthSizePrefixedString(length, encoding),
+-    };
+-  }
+-
+-  if (length === null) {
+-    return {
+-      encode: encodeNullString(encoding),
+-      decode: decodeNullString(encoding),
+-
+-      /**
+-       * Get the number bytes to encode provided string.
+-       * @param {string} value
+-       * @returns {number}
+-       */
+-      encodingLength(value) {
+-        return Buffer.byteLength(value, encoding) + 1;
+-      },
+-    };
+-  }
+-
+-  if (typeof length === 'function') {
+-    return {
+-      encode: encodeCallback(length, encoding),
+-      decode: decodeCallback(length, encoding),
+-
+-      /**
+-       * Get the number bytes to encode provided string.
+-       * @param {string} value
+-       * @returns {number}
+-       */
+-      encodingLength(value) {
+-        return Buffer.byteLength(value, encoding);
+-      },
+-    };
+-  }
+-
+-  throw new TypeError('Unknown type of argument #1.');
+-}
+-
+-/**
+- * Encode null-terminated string.
+- * @param {string} encoding
+- * @returns {Function}
+- */
+-function encodeNullString(encoding) {
+-  return function encode(value, wstream) {
+-    const buf = Buffer.from(value.toString(), encoding);
+-
+-    wstream.writeBuffer(buf);
+-    wstream.writeInt8(0);
+-
+-    encode.bytes = buf.length + 1;
+-  };
+-}
+-
+-/**
+- * Decode null-terminated string.
+- * @param {string} encoding
+- * @returns {Function}
+- */
+-function decodeNullString(encoding) {
+-  return function decode(rstream) {
+-    const bytes = rstream.indexOf(0);
+-
+-    if (bytes === -1) {
+-      throw new NotEnoughDataError(rstream.length + 1, rstream.length);
+-    }
+-
+-    const bytesWithNull = bytes + 1;
+-    const buf = rstream.readBuffer(bytesWithNull);
+-    decode.bytes = bytesWithNull;
+-
+-    return buf.toString(encoding, 0, bytes);
+-  };
+-}
+-
+-/**
+- * Encode fixed-length string.
+- * @param {number} size The length of the string.
+- * @param {string} encoding
+- * @returns {Function}
+- */
+-function encodeFixedString(size, encoding) {
+-  return function encode(value, wstream) {
+-    value = value.toString(); // eslint-disable-line no-param-reassign
+-
+-    if (Buffer.byteLength(value, encoding) !== size) {
+-      throw new Error(`Size of string should be ${size} in bytes.`);
+-    }
+-
+-    const buf = Buffer.from(value, encoding);
+-
+-    wstream.writeBuffer(buf);
+-    encode.bytes = buf.length;
+-  };
+-}
+-
+-/**
+- * Decode fixed-length string.
+- * @param {number} size The length of the string.
+- * @param {string} encoding
+- * @returns {Function}
+- */
+-function decodeFixedString(size, encoding) {
+-  return function decode(rstream) {
+-    const buf = rstream.readBuffer(size);
+-    decode.bytes = size;
+-
+-    return buf.toString(encoding);
+-  };
+-}
+-
+-/**
+- * Encode size-prefixed string.
+- * @param {Object} type Number type.
+- * @param {string} encoding
+- * @returns {number}
+- */
+-function encodeSizePrefixedString(type, encoding) {
+-  return function encode(value, wstream) {
+-    value = value.toString(); // eslint-disable-line no-param-reassign
+-
+-    const context = this;
+-
+-    type.encode.call(context, Buffer.byteLength(value, encoding), wstream);
+-    encode.bytes = type.encode.bytes;
+-
+-    const buf = Buffer.from(value, encoding);
+-
+-    wstream.writeBuffer(buf);
+-    encode.bytes += buf.length;
+-  };
+-}
+-
+-/**
+- * Decode size-prefixed string.
+- * @param {Object} type Number type.
+- * @param {string} encoding
+- * @returns {number}
+- */
+-function decodeSizePrefixedString(type, encoding) {
+-  return function decode(rstream) {
+-    const size = type.decode.call(this, rstream);
+-
+-    if (typeof size !== 'number') {
+-      throw new TypeError('Size of a string should be a number.');
+-    }
+-
+-    const buf = rstream.readBuffer(size);
+-    decode.bytes = type.decode.bytes + buf.length;
+-
+-    return buf.toString(encoding);
+-  };
+-}
+-
+-/**
+- * Get the number of bytes of size-prefixed string.
+- * @param {Object} type Number type.
+- * @param {string} encoding
+- * @returns {number}
+- */
+-function encodingLengthSizePrefixedString(type, encoding) {
+-  return function encodingLength(value) {
+-    const size = Buffer.byteLength(value, encoding);
+-
+-    return type.encodingLength(size) + size;
+-  };
+-}
+-
+-/**
+- * Encode the string with dynamic evaluated size.
+- * @param {Function} callback Function that returns a number.
+- * @param {string} encoding
+- * @returns {number}
+- */
+-function encodeCallback(callback, encoding) {
+-  return function encode(value, wstream) {
+-    encode.bytes = 0;
+-
+-    const context = this;
+-
+-    const expectedLength = callback(context);
+-    const buf = Buffer.from(value.toString(), encoding);
+-
+-    checkLengthType(expectedLength);
+-    checkLength(expectedLength, buf.length);
+-
+-    wstream.writeBuffer(buf);
+-    encode.bytes += buf.length;
+-  };
+-}
+-
+-/**
+- * Decode the string with dynamic evaluated size.
+- * @param {Function} callback Function that returns a number.
+- * @param {string} encoding
+- * @returns {number}
+- */
+-function decodeCallback(callback, encoding) {
+-  return function decode(rstream) {
+-    const size = callback(this);
+-    checkLengthType(size);
+-
+-    const buf = rstream.readBuffer(size);
+-    decode.bytes = size;
+-
+-    return buf.toString(encoding);
+-  };
+-}
+-
+-/**
+- * @param {any} length
+- */
+-function checkLengthType(length) {
+-  if (typeof length !== 'number') {
+-    throw new TypeError('Length of a buffer should be a number.');
+-  }
+-}
+-
+-/**
+- * @param {number} requiredSize
+- * @param {number} havingSize
+- */
+-function checkLength(requiredSize, havingSize) {
+-  if (requiredSize !== havingSize) {
+-    throw new Error(
+-      `Buffer required length ${requiredSize} instead of ${havingSize}`
+-    );
+-  }
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/when.js b/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/when.js
+deleted file mode 100644
+index ffcdaa5..0000000
+--- a/node_modules/@shinyoshiaki/binary-data/src/node_modules/types/when.js
++++ /dev/null
+@@ -1,106 +0,0 @@
+-'use strict';
+-
+-const { isType, isFunction, isUserType } = require('lib/util');
+-const symbols = require('internal/symbols');
+-const { decodeCommon } = require('lib/decode');
+-const { encodeCommon } = require('lib/encode');
+-const { encodingLengthCommon } = require('lib/encoding-length');
+-const Metadata = require('internal/meta');
+-
+-module.exports = when;
+-
+-/**
+- * Type for conditions.
+- * @param {Function|bool} condition
+- * @param {Object} type Any builtin type or schema.
+- * @returns {Object}
+- */
+-function when(condition, type) {
+-  if (!isType(type) && !isUserType(type)) {
+-    throw new TypeError('Argument #2 should be a valid type.');
+-  }
+-
+-  const result = {
+-    encode,
+-    decode,
+-    encodingLength,
+-    [symbols.skip]: false,
+-  };
+-
+-  return result;
+-
+-  /**
+-   * Encode value if condition is truthy.
+-   * @param {any} value
+-   * @param {EncodeStream} wstream
+-   */
+-  function encode(value, wstream) {
+-    const context = Metadata.clone(this);
+-    encode.bytes = 0;
+-
+-    const status = isFunction(condition)
+-      ? Boolean(condition(context))
+-      : Boolean(condition);
+-
+-    result[symbols.skip] = !status;
+-
+-    if (!status) {
+-      Metadata.clean(context);
+-      return;
+-    }
+-
+-    encodeCommon(value, wstream, type, context);
+-    encode.bytes = context.bytes;
+-
+-    Metadata.clean(context);
+-  }
+-
+-  /**
+-   * Decode value if condition is truthy.
+-   * @param {DecodeStream} rstream
+-   * @returns {any}
+-   */
+-  function decode(rstream) {
+-    const context = Metadata.clone(this);
+-    decode.bytes = 0;
+-
+-    const status = isFunction(condition)
+-      ? Boolean(condition(context))
+-      : Boolean(condition);
+-
+-    result[symbols.skip] = !status;
+-
+-    if (!status) {
+-      Metadata.clean(context);
+-      return;
+-    }
+-
+-    const value = decodeCommon(rstream, type, context);
+-
+-    decode.bytes = context.bytes;
+-    Metadata.clean(context);
+-
+-    return value; // eslint-disable-line consistent-return
+-  }
+-
+-  /**
+-   * Get the number bytes of an encoded value
+-   * when condition is truthy or 0.
+-   * @param {any} value
+-   * @returns {number}
+-   */
+-  function encodingLength(value) {
+-    const context = Metadata.clone(this);
+-
+-    const status = isFunction(condition)
+-      ? Boolean(condition(context))
+-      : Boolean(condition);
+-
+-    if (status) {
+-      encodingLengthCommon(value, type, context);
+-    }
+-
+-    Metadata.clean(context);
+-    return context.bytes;
+-  }
+-}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/types/array.js b/node_modules/@shinyoshiaki/binary-data/src/types/array.js
+new file mode 100644
+index 0000000..408ceb8
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/types/array.js
+@@ -0,0 +1,245 @@
++'use strict';
++
++const { decodeCommon } = require('../lib/decode');
++const { encodeCommon } = require('../lib/encode');
++const { encodingLengthCommon } = require('../lib/encoding-length');
++const { isType, isUserType, isFunction } = require('../lib/util');
++const Metadata = require('../internal/meta');
++
++module.exports = array;
++
++/**
++ * Array type.
++ * @param {Object} type Any builtin type or schema.
++ * @param {Object|number} length Number type or number.
++ * @param {string} lengthType Method of calculate the length of array.
++ * @returns {Object}
++ */
++function array(type, length, lengthType = 'count') {
++  if (!isType(type) && !isUserType(type)) {
++    throw new TypeError('Argument #1 should be a valid type.');
++  }
++
++  const isLengthInBytes = lengthType === 'bytes';
++  const isnum = typeof length === 'number';
++  const istype = isType(length);
++  const isfunc = isFunction(length);
++
++  if (!isnum && !istype && !isfunc) {
++    throw new TypeError('Unknown type of argument #1.');
++  }
++
++  return {
++    encode,
++    decode,
++    encodingLength,
++  };
++
++  /**
++   * Encode array's items.
++   * @param {any[]} items Array of items to encode.
++   * @param {EncodeStream} wstream
++   */
++  function encode(items, wstream) {
++    checkArray(items);
++
++    // eslint-disable-next-line no-invalid-this
++    const context = Metadata.clone(this);
++
++    encode.bytes = 0;
++    let expectedSize = 0;
++
++    if (istype) {
++      expectedSize = items.length;
++    } else if (isnum) {
++      expectedSize = length;
++    } else if (isfunc) {
++      expectedSize = length(context);
++
++      checkArraySizeType(expectedSize);
++    }
++
++    if (!isLengthInBytes) {
++      checkArraySize(expectedSize, items.length);
++    }
++
++    if (isLengthInBytes) {
++      const lengthContext = Metadata.clone(context);
++
++      for (const item of items) {
++        encodingLengthCommon(item, type, lengthContext);
++      }
++
++      if (istype) {
++        expectedSize = lengthContext.bytes;
++      }
++
++      checkArraySize(lengthContext.bytes, expectedSize);
++      Metadata.clean(lengthContext);
++    }
++
++    if (istype) {
++      length.encode.call(context, expectedSize, wstream);
++      encode.bytes += length.encode.bytes;
++    }
++
++    items.forEach(item => {
++      encodeCommon(item, wstream, type, context);
++    });
++
++    encode.bytes += context.bytes;
++    Metadata.clean(context);
++  }
++
++  /**
++   * Decode array from stream.
++   * @param {DecodeStream} rstream
++   * @returns {any[]}
++   */
++  function decode(rstream) {
++    let expectedSize = 0;
++    decode.bytes = 0;
++
++    // eslint-disable-next-line no-invalid-this
++    const context = Metadata.clone(this);
++
++    if (isnum) {
++      expectedSize = length;
++    } else if (istype) {
++      expectedSize = length.decode.call(context, rstream);
++      decode.bytes += length.decode.bytes;
++    } else if (isfunc) {
++      expectedSize = length(context);
++    }
++
++    checkArraySizeType(expectedSize);
++
++    let values;
++
++    if (isLengthInBytes) {
++      values = decodeBytes(type, expectedSize, rstream, context);
++    } else {
++      values = decodeCount(type, expectedSize, rstream, context);
++    }
++
++    decode.bytes += context.bytes;
++    Metadata.clean(context);
++    return values;
++  }
++
++  /**
++   * Returns the number of bytes of an encoded items.
++   * @param {any[]} items
++   * @returns {number}
++   */
++  function encodingLength(items) {
++    checkArray(items);
++
++    // eslint-disable-next-line no-invalid-this
++    const context = Metadata.clone(this);
++
++    let size = 0;
++
++    if (isnum && isLengthInBytes) {
++      return length;
++    }
++
++    if (istype && !isLengthInBytes) {
++      size = length.encodingLength(items.length);
++    }
++
++    for (const item of items) {
++      encodingLengthCommon(item, type, context);
++    }
++
++    Metadata.clean(context);
++    size += context.bytes;
++
++    if (istype && isLengthInBytes) {
++      size += length.encodingLength(size);
++    }
++
++    return size;
++  }
++}
++
++/**
++ * Check if argument is an Array.
++ * @param {*} items
++ * @private
++ */
++function checkArray(items) {
++  if (!Array.isArray(items)) {
++    throw new TypeError('Argument #1 should be an Array.');
++  }
++}
++
++/**
++ * Check if argument is a number.
++ * @param {*} length
++ * @private
++ */
++function checkArraySizeType(length) {
++  if (typeof length !== 'number') {
++    throw new TypeError('Length of an array should be a number.');
++  }
++}
++
++/**
++ * Check the number of items in an Array.
++ * @param {number} requiredSize
++ * @param {number} havingSize
++ * @private
++ */
++function checkArraySize(requiredSize, havingSize) {
++  if (requiredSize !== havingSize) {
++    throw new Error(
++      `Argument #1 required length ${requiredSize} instead of ${havingSize}`
++    );
++  }
++}
++
++/**
++ * Decode items of an array when length is the number of bytes.
++ * @param {Object} type Type of each array's item - user schema builtin type.
++ * @param {number} lengthBytes
++ * @param {DecodeStream} rstream
++ * @param {Metadata} context
++ * @returns {any[]}
++ * @private
++ */
++function decodeBytes(type, lengthBytes, rstream, context) {
++  const items = [];
++  const before = context.bytes;
++  let bytes = 0;
++
++  while (bytes < lengthBytes) {
++    items.push(decodeCommon(rstream, type, context));
++    bytes = context.bytes - before;
++  }
++
++  if (bytes > lengthBytes) {
++    throw new Error('Incorrect length of an array.');
++  }
++
++  return items;
++}
++
++/**
++ * Decode items of an array when length is the number of items.
++ * @param {Object} type Type of each array's item - user schema builtin type.
++ * @param {number} length
++ * @param {DecodeStream} rstream
++ * @param {Metadata} context
++ * @returns {any[]}
++ * @private
++ */
++function decodeCount(type, length, rstream, context) {
++  const items = new Array(length);
++
++  for (let i = 0; i < length; i += 1) {
++    items[i] = decodeCommon(rstream, type, context);
++  }
++
++  return items;
++}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/types/bool.js b/node_modules/@shinyoshiaki/binary-data/src/types/bool.js
+new file mode 100644
+index 0000000..0218b48
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/types/bool.js
+@@ -0,0 +1,50 @@
++'use strict';
++
++const { isType } = require('../lib/util');
++
++module.exports = bool;
++
++/**
++ * Boolean type.
++ * @param {Object} type Any builtin type or schema.
++ * @returns {Object}
++ */
++function bool(type) {
++  if (!isType(type)) {
++    throw new TypeError('Argument #1 should be valid type.');
++  }
++
++  /**
++   * Decode element as boolean.
++   * @param {DecodeStream} rstream
++   * @returns {bool}
++   */
++  function decode(rstream) {
++    // eslint-disable-next-line no-invalid-this
++    const context = this;
++
++    const value = type.decode.call(context, rstream);
++    decode.bytes = type.decode.bytes;
++
++    return Boolean(value);
++  }
++
++  /**
++   * Encode boolean item.
++   * @param {bool} value
++   * @param {EncodeStream} wstream
++   */
++  function encode(value, wstream) {
++    // eslint-disable-next-line no-invalid-this
++    const context = this;
++
++    type.encode.call(context, value ? 1 : 0, wstream);
++    encode.bytes = type.encode.bytes;
++  }
++
++  return {
++    encode,
++    decode,
++    encodingLength: type.encodingLength,
++  };
++}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/types/buffer.js b/node_modules/@shinyoshiaki/binary-data/src/types/buffer.js
+new file mode 100644
+index 0000000..dd8dace
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/types/buffer.js
+@@ -0,0 +1,163 @@
++'use strict';
++
++const { isType, isFunction } = require('../lib/util');
++const NotEnoughDataError = require('../lib/not-enough-data-error');
++const BinaryStream = require('../lib/binary-stream');
++
++module.exports = buffer;
++
++/**
++ * Buffer type.
++ * @param {number|Object} length The number of bytes or type for size-prefixed buffers.
++ * @returns {Object}
++ */
++function buffer(length) {
++  const isnum = typeof length === 'number';
++  const istype = isType(length);
++  const isfunc = isFunction(length);
++  const isNull = length === null;
++
++  if (!isnum && !istype && !isfunc && !isNull) {
++    throw new TypeError('Unknown type of argument #1.');
++  }
++
++  return {
++    encode,
++    decode,
++    encodingLength,
++  };
++
++  /**
++   * Encode buffer.
++   * @param {Buffer} buf
++   * @param {EncodeStream} wstream
++   */
++  function encode(buf, wstream) {
++    checkBuffer(buf);
++    encode.bytes = 0;
++
++    // eslint-disable-next-line no-invalid-this
++    const context = this;
++
++    if (isnum) {
++      checkLength(length, buf.length);
++    }
++
++    if (istype) {
++      length.encode.call(context, buf.length, wstream);
++      encode.bytes += length.encode.bytes;
++    }
++
++    if (isfunc) {
++      const expectedLength = length(context);
++
++      checkLengthType(expectedLength);
++      checkLength(expectedLength, buf.length);
++    }
++
++    wstream.writeBuffer(Buffer.isBuffer(buf) ? buf : buf.buffer);
++    encode.bytes += buf.length;
++
++    if (isNull) {
++      wstream.writeUInt8(0);
++      encode.bytes += 1;
++    }
++  }
++
++  /**
++   * Read the buffer from the stream.
++   * @param {DecodeStream} rstream
++   * @returns {Buffer}
++   */
++  function decode(rstream) {
++    let size = 0;
++    decode.bytes = 0;
++
++    // eslint-disable-next-line no-invalid-this
++    const context = this;
++
++    if (isnum) {
++      size = length;
++    } else if (istype) {
++      size = length.decode.call(context, rstream);
++      decode.bytes += length.decode.bytes;
++      checkLengthType(size);
++    } else if (isfunc) {
++      size = length(context);
++
++      checkLengthType(size);
++    } else if (isNull) {
++      size = rstream.indexOf(0);
++
++      if (size === -1) {
++        throw new NotEnoughDataError(rstream.length + 1, rstream.length);
++      }
++    }
++
++    const buf = rstream.readBuffer(size);
++    decode.bytes += size;
++
++    if (isNull) {
++      decode.bytes += 1;
++      rstream.consume(1);
++    }
++
++    return buf;
++  }
++
++  /**
++   * Get the number bytes of an encoded buffer.
++   * @param {Buffer} buf
++   * @returns {number}
++   */
++  function encodingLength(buf) {
++    checkBuffer(buf);
++    let size = 0;
++
++    if (isnum) {
++      return length;
++    }
++
++    if (isNull) {
++      size = 1;
++    } else if (istype) {
++      size = length.encodingLength(buf.length);
++    }
++
++    return size + buf.length;
++  }
++}
++
++/**
++ * Check if item is a Buffer.
++ * @param {any} buf
++ * @private
++ */
++function checkBuffer(buf) {
++  if (!Buffer.isBuffer(buf) && !(buf instanceof BinaryStream)) {
++    throw new TypeError('Argument 1 should be a Buffer or a BinaryStream.');
++  }
++}
++
++/**
++ * Check the length of a Buffer to encode.
++ * @param {number} requiredSize
++ * @param {number} havingSize
++ */
++function checkLength(requiredSize, havingSize) {
++  if (requiredSize !== havingSize) {
++    throw new Error(
++      `Buffer required length ${requiredSize} instead of ${havingSize}`
++    );
++  }
++}
++
++/**
++ * Check if the length type is a number.
++ * @param {any} length
++ */
++function checkLengthType(length) {
++  if (typeof length !== 'number') {
++    throw new TypeError('Length of a buffer should be a number.');
++  }
++}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/types/numbers.js b/node_modules/@shinyoshiaki/binary-data/src/types/numbers.js
+new file mode 100644
+index 0000000..1cf8737
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/types/numbers.js
+@@ -0,0 +1,98 @@
++'use strict';
++
++const createFunction = require('generate-function');
++
++module.exports = {
++  doublebe: createFastStub(8, 'writeDoubleBE', 'readDoubleBE'),
++  doublele: createFastStub(8, 'writeDoubleLE', 'readDoubleLE'),
++  floatbe: createFastStub(4, 'writeFloatBE', 'readFloatBE'),
++  floatle: createFastStub(4, 'writeFloatLE', 'readFloatLE'),
++  int8: createFastStub(1, 'writeInt8', 'readInt8'),
++  uint8: createFastStub(1, 'writeUInt8', 'readUInt8'),
++  int16be: createFastStub(2, 'writeInt16BE', 'readInt16BE'),
++  uint16be: createFastStub(2, 'writeUInt16BE', 'readUInt16BE'),
++  int16le: createFastStub(2, 'writeInt16LE', 'readInt16LE'),
++  uint16le: createFastStub(2, 'writeUInt16LE', 'readUInt16LE'),
++  int32be: createFastStub(4, 'writeInt32BE', 'readInt32BE'),
++  uint32be: createFastStub(4, 'writeUInt32BE', 'readUInt32BE'),
++  int32le: createFastStub(4, 'writeInt32LE', 'readInt32LE'),
++  uint32le: createFastStub(4, 'writeUInt32LE', 'readUInt32LE'),
++  int24be: createFastStubGeneric(3, 'writeIntBE', 'readIntBE'),
++  uint24be: createFastStubGeneric(3, 'writeUIntBE', 'readUIntBE'),
++  int24le: createFastStubGeneric(3, 'writeIntLE', 'readIntLE'),
++  uint24le: createFastStubGeneric(3, 'writeUIntLE', 'readUIntLE'),
++  int40be: createFastStubGeneric(5, 'writeIntBE', 'readIntBE'),
++  uint40be: createFastStubGeneric(5, 'writeUIntBE', 'readUIntBE'),
++  int40le: createFastStubGeneric(5, 'writeIntLE', 'readIntLE'),
++  uint40le: createFastStubGeneric(5, 'writeUIntLE', 'readUIntLE'),
++  int48be: createFastStubGeneric(6, 'writeIntBE', 'readIntBE'),
++  uint48be: createFastStubGeneric(6, 'writeUIntBE', 'readUIntBE'),
++  int48le: createFastStubGeneric(6, 'writeIntLE', 'readIntLE'),
++  uint48le: createFastStubGeneric(6, 'writeUIntLE', 'readUIntLE'),
++};
++
++/**
++ * Generate number type for provided the number of bytes.
++ * @param {number} size
++ * @param {string} write
++ * @param {string} read
++ * @returns {Object}
++ * @private
++ */
++function createFastStub(size, write, read) {
++  const genread = createFunction();
++  const genwrite = createFunction();
++
++  genread(`
++    function decode_${read}(rstream) {
++      decode_${read}.bytes = ${genread.formats.d(size)};
++      return rstream.${read}()
++    }
++  `);
++
++  genwrite(`
++    function encode_${write}(value, wstream) {
++      wstream.${write}(value);
++      encode_${write}.bytes = ${genread.formats.d(size)};
++    }
++  `);
++
++  return {
++    encodingLength: () => size,
++    encode: genwrite.toFunction(),
++    decode: genread.toFunction(),
++  };
++}
++
++/**
++ * Generate number type for provided the number of bytes.
++ * @param {number} size
++ * @param {string} write
++ * @param {string} read
++ * @returns {Object}
++ * @private
++ */
++function createFastStubGeneric(size, write, read) {
++  const genread = createFunction();
++  const genwrite = createFunction();
++
++  genread(`
++    function decode_${read}(rstream) {
++      decode_${read}.bytes = ${genread.formats.d(size)};
++      return rstream.${read}(${genread.formats.d(size)})
++    }
++  `);
++
++  genwrite(`
++    function encode_${write}(value, wstream) {
++      wstream.${write}(value, ${genread.formats.d(size)});
++      encode_${write}.bytes = ${genread.formats.d(size)};
++    }
++  `);
++
++  return {
++    encodingLength: () => size,
++    encode: genwrite.toFunction(),
++    decode: genread.toFunction(),
++  };
++}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/types/reserved.js b/node_modules/@shinyoshiaki/binary-data/src/types/reserved.js
+new file mode 100644
+index 0000000..998cea4
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/types/reserved.js
+@@ -0,0 +1,101 @@
++'use strict';
++
++const { decodeCommon } = require('../lib/decode');
++const { encodeCommon } = require('../lib/encode');
++const { encodingLengthCommon } = require('../lib/encoding-length');
++const { isType, isFunction } = require('../lib/util');
++const symbols = require('../internal/symbols');
++const Metadata = require('../internal/meta');
++
++module.exports = reserved;
++
++/**
++ * Type for reserved data.
++ * @param {Object} type Any builtin type or schema.
++ * @param {number} size The number of reserved items.
++ * @returns {Object}
++ */
++function reserved(type, size = 1) {
++  if (!isType(type)) {
++    throw new TypeError('Invalid data type.');
++  }
++
++  if (!Number.isInteger(size) && !isFunction(size)) {
++    throw new TypeError('Argument #2 should be a valid integer or function.');
++  }
++
++  return {
++    [symbols.skip]: true,
++    encodingLength,
++    decode,
++    encode,
++  };
++
++  /**
++   * Get the number of bytes to encode value.
++   * @param {any} value
++   * @returns {number}
++   */
++  function encodingLength(value) {
++    // eslint-disable-next-line no-invalid-this
++    const context = Metadata.clone(this);
++
++    const count = isFunction(size) ? size(context) : size;
++
++    encodingLengthCommon(value, type, context);
++    Metadata.clean(context);
++
++    return context.bytes * count;
++  }
++
++  /**
++   * Silently decode items.
++   * @param {DecodeStream} rstream
++   */
++  function decode(rstream) {
++    // eslint-disable-next-line no-invalid-this
++    const context = Metadata.clone(this);
++    decode.bytes = 0;
++
++    const count = isFunction(size) ? size(context) : size;
++
++    if (count === 0) {
++      Metadata.clean(context);
++      return;
++    }
++
++    for (let i = count; i > 0; i -= 1) {
++      decodeCommon(rstream, type, context);
++    }
++
++    decode.bytes = context.bytes;
++    Metadata.clean(context);
++  }
++
++  /**
++   * Encode reserved data.
++   * Fill with zeros the number of required bytes.
++   * @param {any} value
++   * @param {EncodeStream} wstream
++   */
++  function encode(value, wstream) {
++    encode.bytes = 0;
++
++    // eslint-disable-next-line no-invalid-this
++    const context = Metadata.clone(this);
++
++    const count = isFunction(size) ? size(context) : size;
++
++    if (count === 0) {
++      Metadata.clean(context);
++      return;
++    }
++
++    for (let i = count; i > 0; i -= 1) {
++      encodeCommon(0, wstream, type, context);
++    }
++
++    encode.bytes = context.bytes;
++    Metadata.clean(context);
++  }
++}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/types/select.js b/node_modules/@shinyoshiaki/binary-data/src/types/select.js
+new file mode 100644
+index 0000000..2670f22
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/types/select.js
+@@ -0,0 +1,56 @@
++'use strict';
++
++const symbols = require('../internal/symbols');
++const { decodeCommon } = require('../lib/decode');
++const Metadata = require('../internal/meta');
++
++module.exports = select;
++
++/**
++ * Type for multiple conditions.
++ * Works almost like `switch` operator.
++ * @param {...any} whenTypes The `when` type.
++ * @returns {Object}
++ */
++function select(...whenTypes) {
++  if (whenTypes.length === 0) {
++    throw new TypeError('You should set at least one condition type.');
++  }
++
++  const result = {
++    decode,
++    encode: () => {},
++    [symbols.skip]: true,
++  };
++
++  return result;
++
++  /* eslint-disable consistent-return */
++  /**
++   * Decode data using a first success contifion.
++   * @param {DecodeStream} rstream
++   * @returns {any}
++   */
++  function decode(rstream) {
++    decode.bytes = 0;
++    const context = Metadata.clone(this); // eslint-disable-line no-invalid-this
++
++    for (const when of whenTypes) {
++      // eslint-disable-next-line no-invalid-this
++      const probalyValue = decodeCommon(rstream, when, context);
++
++      if (when[symbols.skip] === true) {
++        continue; // eslint-disable-line no-continue
++      }
++
++      decode.bytes = context.bytes;
++      Metadata.clean(context);
++
++      result[symbols.skip] = false;
++      return probalyValue;
++    }
++
++    result[symbols.skip] = true;
++  }
++  /* eslint-enable consistent-return */
++}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/types/string.js b/node_modules/@shinyoshiaki/binary-data/src/types/string.js
+new file mode 100644
+index 0000000..487e58f
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/types/string.js
+@@ -0,0 +1,260 @@
++'use strict';
++
++const { isType } = require('../lib/util');
++const NotEnoughDataError = require('../lib/not-enough-data-error');
++
++module.exports = string;
++
++/**
++ * Type for strings.
++ * @param {Object|number|null} length The number of bytes or type for size-prefixed strings.
++ * @param {string} encoding
++ * @returns {Object}
++ */
++function string(length, encoding = 'ascii') {
++  if (!Buffer.isEncoding(encoding)) {
++    throw new Error('Argument #2 should be an encoding name.');
++  }
++
++  if (typeof length === 'number') {
++    return {
++      encode: encodeFixedString(length, encoding),
++      decode: decodeFixedString(length, encoding),
++      encodingLength: () => length,
++    };
++  }
++
++  if (isType(length)) {
++    return {
++      encode: encodeSizePrefixedString(length, encoding),
++      decode: decodeSizePrefixedString(length, encoding),
++      encodingLength: encodingLengthSizePrefixedString(length, encoding),
++    };
++  }
++
++  if (length === null) {
++    return {
++      encode: encodeNullString(encoding),
++      decode: decodeNullString(encoding),
++
++      /**
++       * Get the number bytes to encode provided string.
++       * @param {string} value
++       * @returns {number}
++       */
++      encodingLength(value) {
++        return Buffer.byteLength(value, encoding) + 1;
++      },
++    };
++  }
++
++  if (typeof length === 'function') {
++    return {
++      encode: encodeCallback(length, encoding),
++      decode: decodeCallback(length, encoding),
++
++      /**
++       * Get the number bytes to encode provided string.
++       * @param {string} value
++       * @returns {number}
++       */
++      encodingLength(value) {
++        return Buffer.byteLength(value, encoding);
++      },
++    };
++  }
++
++  throw new TypeError('Unknown type of argument #1.');
++}
++
++/**
++ * Encode null-terminated string.
++ * @param {string} encoding
++ * @returns {Function}
++ */
++function encodeNullString(encoding) {
++  return function encode(value, wstream) {
++    const buf = Buffer.from(value.toString(), encoding);
++
++    wstream.writeBuffer(buf);
++    wstream.writeInt8(0);
++
++    encode.bytes = buf.length + 1;
++  };
++}
++
++/**
++ * Decode null-terminated string.
++ * @param {string} encoding
++ * @returns {Function}
++ */
++function decodeNullString(encoding) {
++  return function decode(rstream) {
++    const bytes = rstream.indexOf(0);
++
++    if (bytes === -1) {
++      throw new NotEnoughDataError(rstream.length + 1, rstream.length);
++    }
++
++    const bytesWithNull = bytes + 1;
++    const buf = rstream.readBuffer(bytesWithNull);
++    decode.bytes = bytesWithNull;
++
++    return buf.toString(encoding, 0, bytes);
++  };
++}
++
++/**
++ * Encode fixed-length string.
++ * @param {number} size The length of the string.
++ * @param {string} encoding
++ * @returns {Function}
++ */
++function encodeFixedString(size, encoding) {
++  return function encode(value, wstream) {
++    value = value.toString(); // eslint-disable-line no-param-reassign
++
++    if (Buffer.byteLength(value, encoding) !== size) {
++      throw new Error(`Size of string should be ${size} in bytes.`);
++    }
++
++    const buf = Buffer.from(value, encoding);
++
++    wstream.writeBuffer(buf);
++    encode.bytes = buf.length;
++  };
++}
++
++/**
++ * Decode fixed-length string.
++ * @param {number} size The length of the string.
++ * @param {string} encoding
++ * @returns {Function}
++ */
++function decodeFixedString(size, encoding) {
++  return function decode(rstream) {
++    const buf = rstream.readBuffer(size);
++    decode.bytes = size;
++
++    return buf.toString(encoding);
++  };
++}
++
++/**
++ * Encode size-prefixed string.
++ * @param {Object} type Number type.
++ * @param {string} encoding
++ * @returns {number}
++ */
++function encodeSizePrefixedString(type, encoding) {
++  return function encode(value, wstream) {
++    value = value.toString(); // eslint-disable-line no-param-reassign
++
++    const context = this;
++
++    type.encode.call(context, Buffer.byteLength(value, encoding), wstream);
++    encode.bytes = type.encode.bytes;
++
++    const buf = Buffer.from(value, encoding);
++
++    wstream.writeBuffer(buf);
++    encode.bytes += buf.length;
++  };
++}
++
++/**
++ * Decode size-prefixed string.
++ * @param {Object} type Number type.
++ * @param {string} encoding
++ * @returns {number}
++ */
++function decodeSizePrefixedString(type, encoding) {
++  return function decode(rstream) {
++    const size = type.decode.call(this, rstream);
++
++    if (typeof size !== 'number') {
++      throw new TypeError('Size of a string should be a number.');
++    }
++
++    const buf = rstream.readBuffer(size);
++    decode.bytes = type.decode.bytes + buf.length;
++
++    return buf.toString(encoding);
++  };
++}
++
++/**
++ * Get the number of bytes of size-prefixed string.
++ * @param {Object} type Number type.
++ * @param {string} encoding
++ * @returns {number}
++ */
++function encodingLengthSizePrefixedString(type, encoding) {
++  return function encodingLength(value) {
++    const size = Buffer.byteLength(value, encoding);
++
++    return type.encodingLength(size) + size;
++  };
++}
++
++/**
++ * Encode the string with dynamic evaluated size.
++ * @param {Function} callback Function that returns a number.
++ * @param {string} encoding
++ * @returns {number}
++ */
++function encodeCallback(callback, encoding) {
++  return function encode(value, wstream) {
++    encode.bytes = 0;
++
++    const context = this;
++
++    const expectedLength = callback(context);
++    const buf = Buffer.from(value.toString(), encoding);
++
++    checkLengthType(expectedLength);
++    checkLength(expectedLength, buf.length);
++
++    wstream.writeBuffer(buf);
++    encode.bytes += buf.length;
++  };
++}
++
++/**
++ * Decode the string with dynamic evaluated size.
++ * @param {Function} callback Function that returns a number.
++ * @param {string} encoding
++ * @returns {number}
++ */
++function decodeCallback(callback, encoding) {
++  return function decode(rstream) {
++    const size = callback(this);
++    checkLengthType(size);
++
++    const buf = rstream.readBuffer(size);
++    decode.bytes = size;
++
++    return buf.toString(encoding);
++  };
++}
++
++/**
++ * @param {any} length
++ */
++function checkLengthType(length) {
++  if (typeof length !== 'number') {
++    throw new TypeError('Length of a buffer should be a number.');
++  }
++}
++
++/**
++ * @param {number} requiredSize
++ * @param {number} havingSize
++ */
++function checkLength(requiredSize, havingSize) {
++  if (requiredSize !== havingSize) {
++    throw new Error(
++      `Buffer required length ${requiredSize} instead of ${havingSize}`
++    );
++  }
++}
+diff --git a/node_modules/@shinyoshiaki/binary-data/src/types/when.js b/node_modules/@shinyoshiaki/binary-data/src/types/when.js
+new file mode 100644
+index 0000000..d4402b5
+--- /dev/null
++++ b/node_modules/@shinyoshiaki/binary-data/src/types/when.js
+@@ -0,0 +1,106 @@
++'use strict';
++
++const { isType, isFunction, isUserType } = require('../lib/util');
++const symbols = require('../internal/symbols');
++const { decodeCommon } = require('../lib/decode');
++const { encodeCommon } = require('../lib/encode');
++const { encodingLengthCommon } = require('../lib/encoding-length');
++const Metadata = require('../internal/meta');
++
++module.exports = when;
++
++/**
++ * Type for conditions.
++ * @param {Function|bool} condition
++ * @param {Object} type Any builtin type or schema.
++ * @returns {Object}
++ */
++function when(condition, type) {
++  if (!isType(type) && !isUserType(type)) {
++    throw new TypeError('Argument #2 should be a valid type.');
++  }
++
++  const result = {
++    encode,
++    decode,
++    encodingLength,
++    [symbols.skip]: false,
++  };
++
++  return result;
++
++  /**
++   * Encode value if condition is truthy.
++   * @param {any} value
++   * @param {EncodeStream} wstream
++   */
++  function encode(value, wstream) {
++    const context = Metadata.clone(this);
++    encode.bytes = 0;
++
++    const status = isFunction(condition)
++      ? Boolean(condition(context))
++      : Boolean(condition);
++
++    result[symbols.skip] = !status;
++
++    if (!status) {
++      Metadata.clean(context);
++      return;
++    }
++
++    encodeCommon(value, wstream, type, context);
++    encode.bytes = context.bytes;
++
++    Metadata.clean(context);
++  }
++
++  /**
++   * Decode value if condition is truthy.
++   * @param {DecodeStream} rstream
++   * @returns {any}
++   */
++  function decode(rstream) {
++    const context = Metadata.clone(this);
++    decode.bytes = 0;
++
++    const status = isFunction(condition)
++      ? Boolean(condition(context))
++      : Boolean(condition);
++
++    result[symbols.skip] = !status;
++
++    if (!status) {
++      Metadata.clean(context);
++      return;
++    }
++
++    const value = decodeCommon(rstream, type, context);
++
++    decode.bytes = context.bytes;
++    Metadata.clean(context);
++
++    return value; // eslint-disable-line consistent-return
++  }
++
++  /**
++   * Get the number bytes of an encoded value
++   * when condition is truthy or 0.
++   * @param {any} value
++   * @returns {number}
++   */
++  function encodingLength(value) {
++    const context = Metadata.clone(this);
++
++    const status = isFunction(condition)
++      ? Boolean(condition(context))
++      : Boolean(condition);
++
++    if (status) {
++      encodingLengthCommon(value, type, context);
++    }
++
++    Metadata.clean(context);
++    return context.bytes;
++  }
++}
